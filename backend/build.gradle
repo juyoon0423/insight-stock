@@ -25,6 +25,7 @@ dependencies {
 	implementation 'org.flywaydb:flyway-core'
 	implementation 'org.flywaydb:flyway-database-postgresql'
 	implementation 'me.paulschwarz:spring-dotenv:5.1.0'
+	implementation 'com.pgvector:pgvector:0.1.6'
 
 	runtimeOnly 'org.postgresql:postgresql'
 
