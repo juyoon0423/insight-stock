@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: insight-stock
+  datasource:
+    url: jdbc:postgresql://localhost:5432/insight_stock
+    username: ${POSTGRES_USER}
+    password: ${POSTGRES_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
