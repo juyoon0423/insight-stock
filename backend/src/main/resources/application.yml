@@ -14,3 +14,11 @@ management:
     web:
       exposure:
         include: health
+
+dart:
+  api:
+    base-url: https://opendart.fss.or.kr/api
+    key: ${DART_API_KEY}
+  collector:
+    # 10분마다 오늘 날짜 공시를 재조회. rcept_no 중복 체크로 걸러지므로 재조회해도 안전.
+    fixed-delay-ms: 600000
