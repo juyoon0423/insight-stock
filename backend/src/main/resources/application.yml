@@ -22,3 +22,7 @@ dart:
   collector:
     # 10분마다 오늘 날짜 공시를 재조회. rcept_no 중복 체크로 걸러지므로 재조회해도 안전.
     fixed-delay-ms: 600000
+  document-collector:
+    # 10분마다 PENDING 공시를 batch-size건씩 처리.
+    fixed-delay-ms: 600000
+    batch-size: 20
