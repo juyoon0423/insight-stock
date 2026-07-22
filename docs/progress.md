@@ -142,7 +142,34 @@
   `ChunkingScheduler`는 계속 비활성화(`chunking.collector.enabled: false`) 상태로
   둠 — 임베딩 전에 검증할 게 더 있으면 켜기 전에 확인.
 
-Repository/Service 계층 중 임베딩, ElasticSearch 색인은 아직 없음 — 다음 단계.
+- **ElasticSearch 색인 파이프라인** — 코드를 짜기 전에 실제 청크 내용을 ES
+  `_analyze` API로 먼저 테스트했다. Nori 자체는 표준 분석기 대비 압도적으로
+  유효했지만(dart-findings.md 2-8), 이 도메인에서 제일 중요한 단어인 "보고서"가
+  기본 사전으로는 "보"+"고서"로 잘못 쪼개지는 걸 발견 — 파싱 에러 없이 검색만
+  조용히 안 되는 유형이라 2-7의 데이터 손실 사례와 비슷하다. `특수관계인`/`감사인`
+  (자모 조각 생성), `이사회`(사회로 오분석) 등 추가로 깨지는 단어도 실측으로
+  확인했다. `보고서`/`신고서`/`설명서`(report_nm 복합어 18종의 공통 접미사 —
+  개별 등록 없이 이 3개만으로 전부 해결됨)/`특수관계인`/`감사인`/`이사회` 6개만
+  사용자 사전에 최소로 추가(유상증자/최대주주 등 나머지 후보는 분해돼도 각 조각이
+  검색 가능해서 제외).
+
+  `ChunkDocument`(Spring Data Elasticsearch `@Document`, `chunks` 인덱스) +
+  `ChunkDocumentRepository` + `IndexingService`(+`IndexingScheduler`, 기존
+  패턴과 동일하게 문서 하나당 독립 트랜잭션)를 구현. `DocumentStatus`에 `INDEXED`
+  추가(`CHUNKED → INDEXED`, 재색인은 `INDEXED → CHUNKED`로 되돌리는 기존 패턴
+  재사용). ES 문서 `_id`는 Postgres `chunk.id`를 그대로 써서 재색인해도 중복이
+  안 생기고(upsert), 재색인 시에는 먼저 `disclosure_id`로 delete-by-query 해서
+  재청킹으로 고아가 된 예전 문서를 정리한다. `embedding`은 ES에 넣지 않음(pgvector
+  전용, erd.md 이중 저장 설계 그대로 — BM25/벡터 검색 역할 분리).
+
+  단계별로 검증: ①인덱스 매핑/설정이 의도대로 생성됐는지 확인(`_mapping`/
+  `_settings` API로 Nori 분석기·사용자 사전 반영 확인) → ②49개 청크(disclosure
+  8건) 파일럿 색인 후 "보고서" 검색(8건 히트), "합병" multi_match, `corp_name.
+  keyword` 정확 필터까지 확인 → ③전체 5,201개 색인, Postgres `chunks` 테이블
+  건수(5,201)와 ES 문서 수(5,201) 일치, `chunk_source` 집계도 정확히 일치
+  확인. 실패 0건.
+
+Repository/Service 계층 중 임베딩만 아직 없음 — 마지막 단계.
 
 ## 2. 현재 프로젝트 상태 요약
 
@@ -154,7 +181,7 @@ Repository/Service 계층 중 임베딩, ElasticSearch 색인은 아직 없음 �
 | 백엔드 프레임워크 | Spring Boot 3.5.16 (Web, Data JPA, Validation, Actuator) |
 | 빌드 도구 | Gradle 8.11.1 (wrapper 포함) |
 | DB | PostgreSQL 16 + pgvector (`pgvector/pgvector:pg16`) |
-| 검색엔진 | Elasticsearch 8.15.3 + Nori(한글 형태소 분석기) |
+| 검색엔진 | Elasticsearch 8.15.3 + Nori(한글 형태소 분석기), Spring Data Elasticsearch로 연동 |
 | 마이그레이션 | Flyway |
 | ORM | Hibernate 6.6.x (JPA), pgvector 매핑용 커스텀 UserType |
 | 환경변수 | `.env` (spring-dotenv로 로드, 커밋 제외) |
@@ -178,9 +205,11 @@ insight-stock/
 │       ├── repository/    # CompanyRepository, DisclosureRepository
 │       ├── dart/          # DartListClient, DartDocumentClient, XmlTextExtractor, DartApiException, dto/
 │       ├── collector/     # DisclosureCollectorService(+Scheduler), DocumentCollectorService(+Scheduler)
-│       └── chunking/      # ChunkingService(+Scheduler)
+│       ├── chunking/      # ChunkingService(+Scheduler)
+│       └── indexing/      # ChunkDocument, ChunkDocumentRepository, IndexingService(+Scheduler)
 │   └── src/main/resources/
 │       ├── application.yml
+│       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
 │       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql
 ├── tests/exploration/     # DART API 탐색용 파이썬 스크립트 (참고용, 자동화 테스트 아님)
 ├── .env / .env.example    # DART_API_KEY, POSTGRES_USER, POSTGRES_PASSWORD
@@ -190,19 +219,20 @@ insight-stock/
 `frontend/`는 아직 없음 (나중에 추가 예정). Controller도 아직 없음(프론트엔드 연동
 시점에 필요).
 
-### 현재 데이터 상태 (2026-07-22 기준, 3단계 파싱 적용 후)
+### 현재 데이터 상태 (2026-07-22 기준, ES 색인 완료 후)
 
-- `companies`: 557건, `disclosures`: 1958건, `chunks`: 5,201건
-- `document_status` 분포: `PENDING` 1642 / `PARSED` 148 / `CHUNKED` 147 / `NO_DOCUMENT` 16 / `FAILED` 5
-  (`FAILED` 5건은 전부 `감사보고서`류 — document API ZIP 안에 `{rcept_no}.xml`을
-  안 준 케이스. 오늘 손댄 XmlTextExtractor와는 무관, 재시도 로직은 아직 없음)
-- `chunks.chunk_source` 분포: `SECTION` 5,094 / `WHOLE_DOCUMENT` 86 / `SLIDING_WINDOW` 21
-  (정규식 폴백 비율이 42.1%→12.5%로 줄면서 대부분의 청크가 구조 기반으로 전환됨 —
-  dart-findings.md 2-7 참고)
-- `ChunkingScheduler`는 `chunking.collector.enabled: false`로 꺼둔 상태 — 표
-  미압축은 실익이 작다고 판단해 보류(아래 3절 1번), 임베딩 착수 전 재확인할 것.
-  list/document 수집 스케줄러는 계속 켜져 있어
-  백엔드를 띄워두면 `PENDING`/`PARSED` 비율은 계속 올라간다.
+- `companies`: 558건, `disclosures`: 1960건, `chunks`: 5,201건 — ElasticSearch
+  `chunks` 인덱스에도 5,201건 색인 완료(Postgres/ES 건수 일치 확인)
+- `document_status` 분포: `PENDING` 1584 / `PARSED` 208 / `INDEXED` 147 /
+  `NO_DOCUMENT` 16 / `FAILED` 5 (`FAILED` 5건은 전부 `감사보고서`류 — document
+  API ZIP 안에 `{rcept_no}.xml`을 안 준 케이스, `XmlTextExtractor`와 무관)
+- `chunks.chunk_source` 분포(ES 집계로도 동일하게 확인): `SECTION` 5,094 /
+  `WHOLE_DOCUMENT` 86 / `SLIDING_WINDOW` 21
+- `ChunkingScheduler`는 계속 비활성화(`chunking.collector.enabled: false`) —
+  표 미압축은 보류 결정(3절 1번). `IndexingScheduler`는 검증 완료 후 활성화
+  (`indexing.collector.enabled: true`)해서 앞으로 청킹이 다시 켜지면 자동으로
+  뒤따라 색인한다. list/document 수집 스케줄러는 계속 켜져 있어 백엔드를
+  띄워두면 `PENDING`/`PARSED` 비율은 계속 올라간다.
 
 ### 실행 방법 요약
 
@@ -223,22 +253,20 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 
 ## 3. 다음에 할 일
 
-list API 수집, document 원문 수집, 청킹까지 완료. 청크 폭증 문제도 해결됐다.
-순서는 아래 우선순위대로.
+list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSearch 색인까지
+완료. 하이브리드 검색(BM25+벡터)의 절반(BM25)이 이걸로 끝났고, 남은 건 임베딩뿐이다.
 
 1. **[완료] 청크 폭증 문서 대응** — `SLIDING_WINDOW` 청크를 실제로 열어봐서 원인을
-   두 가지로 분리하고 둘 다 해결했다(dart-findings.md 2-6, 2-7).
-   - CSS 오염 제거 — 일부 "자율공시"가 HTML 보일러플레이트를 써서 CSS가 그대로
-     청크에 남던 문제. `XmlTextExtractor`에 head/style/script 블록 제거 추가.
-   - 표 미압축 — 원래는 "정규식 폴백에서도 표 압축"을 검토했는데, 실측해보니 폴백
-     원인 대부분(이스케이프 안 된 `&`, `<표1>`류 가짜 태그)이 복구 가능해서 **폴백
-     자체를 거의 안 타게 만드는 쪽**으로 해결했다. `XmlTextExtractor`를 3단계
-     파싱(엄격→정제 후 재시도→정규식 폴백)으로 재구성. 121건 재정제+재청킹 결과:
-     폴백 비율 42.1%→12.5%, 786,390자 문서의 "표 나열형" 청크 비율 72.1%→3.6%.
-     남은 `SLIDING_WINDOW`는 21개뿐이라 추가 압축 작업은 보류.
-   - 부수 발견: 정규식 폴백이 `<개정 2009.2.3>` 같은 법령 인용 표기를 태그로
-     오인해 **에러 없이 조용히 삭제**하고 있었다(데이터 손실, dart-findings.md 2-7).
-2. **[그다음] 임베딩** — OpenAI 크레딧 충전 후 착수. `chunks.embedding IS NULL`인
+   두 가지로 분리하고 둘 다 해결했다(dart-findings.md 2-6, 2-7). CSS 오염 제거 +
+   XML 3단계 파싱(엄격→정제 후 재시도→정규식 폴백)으로 폴백 비율 42.1%→12.5%,
+   786,390자 문서의 "표 나열형" 청크 비율 72.1%→3.6%까지 개선. 부수 발견: 정규식
+   폴백이 법령 인용 표기(`<개정 2009.2.3>` 등)를 태그로 오인해 조용히 삭제하던
+   데이터 손실도 같이 해결됨.
+2. **[완료] ElasticSearch 색인** — `chunks` 인덱스에 5,201건 전부 색인, Postgres와
+   건수 일치 확인. Nori 사용자 사전(`보고서`/`신고서`/`설명서`/`특수관계인`/
+   `감사인`/`이사회` 6개)까지 실측 검증 후 반영(dart-findings.md 2-8 — "보고서"가
+   기본 사전으로는 깨지는 걸 코드 짜기 전에 `_analyze` API로 미리 발견한 사례).
+3. **[남음] 임베딩** — OpenAI 크레딧 충전 후 착수. `chunks.embedding IS NULL`인
    청크를 배치로 찾아 `text-embedding-3-small`(1536차원)로 임베딩.
    `ChunkingService`가 임베딩 코드를 전혀 참조하지 않게 분리해뒀으므로, 별도
    `EmbeddingService` + 임베딩 클라이언트 인터페이스(예:
@@ -246,9 +274,8 @@ list API 수집, document 원문 수집, 청킹까지 완료. 청크 폭증 문�
    추가하는 형태가 될 것. `document_status`에 별도 `EMBEDDED` 상태는 두지 않고
    `chunks.embedding IS NULL` 자체를 "임베딩 대기" 표시로 쓴다.
    `chunks.embedding_model`에 사용한 모델명 기록(모델 교체 시 재임베딩 대상 식별용).
-3. **[그다음] ElasticSearch 색인** — 비용 0, 크레딧 없이 바로 가능. `chunks.content`를
-   ElasticSearch에 색인(`chunks.embedding`은 pgvector 색인용 — RRF 융합을 위해 두
-   검색의 단위를 청크로 일치시키는 설계, [docs/erd.md](./erd.md) 참고).
+   임베딩까지 끝나면 RRF(Reciprocal Rank Fusion)로 BM25(ES)와 벡터(pgvector)
+   검색 결과를 융합하는 단계가 남는다([docs/erd.md](./erd.md) 참고).
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
@@ -285,10 +312,10 @@ list API 수집, document 원문 수집, 청킹까지 완료. 청크 폭증 문�
   다르다 — 언젠가 견고하게 만들려면 `saveIfNew()` 호출부에 try/catch 추가를
   검토. 배치 서비스를 새로 만들 때는 이 패턴(문서 단위 개별 트랜잭션 + 문서 단위
   try/catch)을 따를 것.
-- **스케줄러 10분 간격이 개발 중엔 잦게 느껴질 수 있음** — list/document/chunking
-  스케줄러 모두 `@Scheduled(fixedDelay)`라 앱을 띄울 때마다 즉시 1회 실행된다.
-  개발 프로파일에서 주기를 늘리거나, 로컬 개발 시 스케줄러를 끄고 수동 트리거로
-  대체하는 방안을 나중에 검토.
+- **스케줄러 10분 간격이 개발 중엔 잦게 느껴질 수 있음** — list/document/chunking/
+  indexing 스케줄러 모두 `@Scheduled(fixedDelay)`라 앱을 띄울 때마다 즉시 1회
+  실행된다. 개발 프로파일에서 주기를 늘리거나, 로컬 개발 시 스케줄러를 끄고
+  수동 트리거로 대체하는 방안을 나중에 검토.
 - **정형 서식 공시(소유상황보고서 등)는 빈 표가 많음 — 청킹에서 필터링으로 해결**
   `TABLE`은 있지만 실제 기재된 값이 없는 셀(빈 문자열)이 많아서 `raw_content`에
   `" | "`만 있는 줄이 섞여 들어가는 문제. `ChunkingService`가 청크 생성 후 "의미
@@ -296,6 +323,13 @@ list API 수집, document 원문 수집, 청킹까지 완료. 청크 폭증 문�
   `application.yml`의 `chunking.empty-content-filter`(`min-length`,
   `min-meaningful-ratio`)로 설정값화해뒀다 — 너무 공격적으로 걸러진다 싶으면
   코드 변경 없이 이 값만 조정하면 됨.
+- **한국어 형태소 분석기는 설치만으로 끝나지 않음 — 도메인 사전 튜닝이 필수**
+  Nori 기본 사전이 이 도메인에서 제일 중요한 단어 "보고서"를 "보"+"고서"로
+  잘못 쪼개고 있었다(파싱 에러 없이 검색만 조용히 안 되는 유형). 코드를 짜기 전에
+  `_analyze` API로 실제 청크 내용을 먼저 테스트해서 잡아냈다. 사용자 사전
+  (`elasticsearch/chunk-index-settings.json`)에 6개 단어만 최소로 추가했는데,
+  나중에 실제 검색 로그를 보면서 비슷하게 깨지는 단어가 더 나오면 이 파일에
+  추가하면 된다. 상세: dart-findings.md 2-8.
 
 ## 5. 다음 세션 시작 방법
 
