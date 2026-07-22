@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -19,7 +20,10 @@ import org.xml.sax.SAXException;
 // DART 원문 XML을 정제된 텍스트로 바꾼다. 일부 문서는 본문에 이스케이프되지 않은 '<' 문자가
 // 섞여 있어 well-formed XML이 아닐 수 있으므로(dart-findings.md 2-2), 엄격한 파싱이 실패하면
 // 정규식 기반 태그 제거로 폴백한다. TABLE은 행 단위로 "셀1 | 셀2" 형태로 직렬화해 라벨-값
-// 관계가 깨지지 않게 한다(dart-findings.md 2-4).
+// 관계가 깨지지 않게 한다(dart-findings.md 2-4). 일부 "자율공시" 유형은 DART4 스키마가 아니라
+// <html><head><STYLE>...</STYLE></head> 형태의 HTML 보일러플레이트를 쓰는데(dart-findings.md 2-6),
+// 이 CSS 텍스트는 태그가 아니라서 단순 태그 제거로는 안 지워지므로 head/style/script 블록을
+// 내용째로 먼저 잘라낸다.
 @Slf4j
 public final class XmlTextExtractor {
 
@@ -105,8 +109,15 @@ public final class XmlTextExtractor {
         }
     }
 
+    // head/style/script는 내용 자체가 태그가 아닌 CSS/JS 텍스트라 <[^>]+>로는 안 지워진다.
+    // 여는/닫는 태그 이름이 같아야 매치되도록 백레퍼런스(\1)를 쓴다.
+    private static final Pattern NOISE_BLOCK_PATTERN =
+            Pattern.compile("<(head|style|script)\\b[^>]*>.*?</\\1\\s*>",
+                    Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
     private static String regexStrip(String xml) {
-        return xml.replaceAll("<[^>]+>", " ");
+        String withoutNoiseBlocks = NOISE_BLOCK_PATTERN.matcher(xml).replaceAll(" ");
+        return withoutNoiseBlocks.replaceAll("<[^>]+>", " ");
     }
 
     private static String normalizeWhitespace(String text) {
