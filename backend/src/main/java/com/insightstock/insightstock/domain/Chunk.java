@@ -48,6 +48,10 @@ public class Chunk {
     @Column(name = "chunk_type", nullable = false)
     private ChunkType chunkType;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "chunk_source", nullable = false)
+    private ChunkSource chunkSource;
+
     @Column(name = "content", nullable = false)
     private String content;
 

@@ -55,9 +55,19 @@ public final class XmlTextExtractor {
         return builder.parse(new InputSource(new StringReader(xml)));
     }
 
+    // raw_content만으로는 원본 XML의 섹션 구조(TITLE)가 사라지므로, 청킹 단계에서 법정 서식
+    // 섹션 경계를 복원할 수 있도록 고정 마커를 남긴다. "[[SECTION]]"은 국문 공시 본문에
+    // 나올 일이 없는 문자열이라 충돌 위험이 없다.
+    private static final String SECTION_MARKER = "[[SECTION]]";
+
     private static void walk(Element element, StringBuilder text) {
         if ("TABLE".equalsIgnoreCase(element.getTagName())) {
             appendTableRows(element, text);
+            return;
+        }
+        if ("TITLE".equalsIgnoreCase(element.getTagName())) {
+            text.append('\n').append(SECTION_MARKER).append('\n')
+                    .append(element.getTextContent().strip()).append('\n');
             return;
         }
 
