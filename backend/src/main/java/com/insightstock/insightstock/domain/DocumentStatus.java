@@ -13,5 +13,8 @@ public enum DocumentStatus {
     // 재시도 로직도 이 케이스를 재시도 대상으로 삼지 않는다.
     NO_DOCUMENT,
     CHUNKED,
+    // ElasticSearch에 청크가 색인 완료된 terminal 상태. 재색인이 필요하면 CHUNKED로
+    // 되돌려서 IndexingScheduler가 다시 집어가게 한다(재청킹 때 썼던 것과 같은 패턴).
+    INDEXED,
     FAILED
 }

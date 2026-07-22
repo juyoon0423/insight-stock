@@ -1,0 +1,34 @@
+{
+  "index": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "analysis": {
+    "tokenizer": {
+      "insight_nori_tokenizer": {
+        "type": "nori_tokenizer",
+        "decompound_mode": "mixed",
+        "user_dictionary_rules": [
+          "보고서",
+          "신고서",
+          "설명서",
+          "특수관계인",
+          "감사인",
+          "이사회"
+        ]
+      }
+    },
+    "filter": {
+      "insight_pos_filter": {
+        "type": "nori_part_of_speech"
+      }
+    },
+    "analyzer": {
+      "insight_nori": {
+        "type": "custom",
+        "tokenizer": "insight_nori_tokenizer",
+        "filter": ["insight_pos_filter", "lowercase"]
+      }
+    }
+  }
+}
