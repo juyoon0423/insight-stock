@@ -104,9 +104,43 @@
 
   수정 후 18건 중 8건 재청킹 성공 확인(나머지 10건은 배치 크기 20건 제한으로
   이번 실행에 안 걸렸을 뿐 — 다음 청킹 실행 때 자연히 처리됨, 버그 아님).
-  `chunk_index` 중복 0건, CSS 잔존 0건까지 psql로 확인. 표 미압축(2단계)은
-  아직 손대지 않아 `ChunkingScheduler`는 계속 비활성화(`chunking.collector.
-  enabled: false`) 상태로 둠.
+  `chunk_index` 중복 0건, CSS 잔존 0건까지 psql로 확인.
+
+- **표 미압축 문제(2단계) — 정규식 폴백 자체를 거의 안 타게 만드는 방향으로 해결** —
+  원래 계획은 "정규식 폴백에서도 표를 압축"이었는데, 원본 XML을 다시 열어보니 폴백
+  원인이 대부분 이스케이프 안 된 `&`와 `<표1>`/`<개정 2009.2.3>` 같은 가짜 태그
+  두 가지로 좁혀졌고, 둘 다 복구 가능하다는 걸 실측으로 확인했다(dart-findings.md
+  2-7). `XmlTextExtractor.extract()`를 3단계로 재구성: ①엄격 파싱 → ②실패 시
+  이스케이프 안 된 `&`를 `&amp;`로, "ASCII로 시작하는 태그명이 아닌 `<...>`"를
+  `&lt;`/`&gt;`로 정제 후 재시도(성공하면 검증된 DOM 경로 그대로 사용 — 표 압축
+  로직을 새로 안 짜도 됨) → ③그래도 실패하면 기존 정규식 폴백. 이 과정에서 중요한
+  걸 하나 더 발견했다: 기존 정규식 폴백이 `<개정 2009.2.3>` 같은 법령 인용 표기를
+  태그로 오인해서 **에러 없이 조용히 삭제**하고 있었다 — 파싱 에러와 달리 눈에
+  안 띄는 데이터 손실이었다(dart-findings.md 2-7).
+
+  정제 규칙이 정상 내용을 훼손하지 않는지 자동 검증하는 단위 테스트 5개를 추가했다
+  (`XmlTextExtractorTest`, 이 클래스 최초의 테스트) — 정상 XML, `&` 복구,
+  가짜 태그 보존, 이중 이스케이프 방지, HTML 보일러플레이트의 정상 폴백 하강까지
+  커버.
+
+  기존 `PARSED`/`CHUNKED` 121건 전체를 재정제+재청킹해서 비교했다:
+  - 폴백(마커 없음) 비율: 42.1% → **12.5%**
+  - 786,390자 문서(투자설명서): `TABLE` 2,944개·`TITLE` 64개 복구, "표 나열형"
+    청크 비율 72.1% → **3.6%**. char_length/청크 수는 오히려 늘었지만(786,390자→
+    898,165자, 1,210개→1,406개) — 표 구분자(`" | "`)와 삭제되던 법령 인용 텍스트가
+    복원된 결과라 나쁜 신호가 아님. "청크 개수"가 아니라 "표 구조가 살아있는
+    비율"이 원래 문제였다는 게 드러났다.
+  - 남은 `SLIDING_WINDOW`는 21개 청크뿐(전체 5,201개 중) — 원래 계획했던 "폴백에서
+    표 압축"은 실익이 작다고 판단해 보류하기로 했다.
+
+  재정제 과정에서 알게 된 별개 이슈: `document_status=FAILED`가 1→5건으로
+  늘었는데 전부 `감사보고서`/`연결감사보고서` 유형이고, 원인은 오늘 건드린
+  `XmlTextExtractor`가 아니라 `DocumentCollectorService`의 ZIP 내부 파일명 불일치
+  (`ZIP 안에 {rcept_no}.xml 항목이 없습니다`)다 — 오늘 작업과 무관, 다음에 감사보고서
+  유형 document API 응답을 직접 확인해볼 것.
+
+  `ChunkingScheduler`는 계속 비활성화(`chunking.collector.enabled: false`) 상태로
+  둠 — 임베딩 전에 검증할 게 더 있으면 켜기 전에 확인.
 
 Repository/Service 계층 중 임베딩, ElasticSearch 색인은 아직 없음 — 다음 단계.
 
@@ -156,16 +190,18 @@ insight-stock/
 `frontend/`는 아직 없음 (나중에 추가 예정). Controller도 아직 없음(프론트엔드 연동
 시점에 필요).
 
-### 현재 데이터 상태 (2026-07-22 기준, CSS 오염 제거 후)
+### 현재 데이터 상태 (2026-07-22 기준, 3단계 파싱 적용 후)
 
-- `companies`: 555건, `disclosures`: 1918건, `chunks`: 1,401건
-- `document_status` 분포: `PENDING` 1781 / `PARSED` 86 / `CHUNKED` 35 / `NO_DOCUMENT` 15 / `FAILED` 1
-  (`FAILED` 1건은 document API가 ZIP 안에 `{rcept_no}.xml`을 안 준 개별 케이스 —
-  재시도 로직은 아직 없음, 필요하면 나중에 추가)
-- `chunks.chunk_source` 분포: `SLIDING_WINDOW` 1,241 / `SECTION` 141 / `WHOLE_DOCUMENT` 19
-- `ChunkingScheduler`는 `chunking.collector.enabled: false`로 꺼둔 상태 —
-  표 미압축 문제(아래 3절 1번)를 먼저 처리할 때까지 `PARSED`가 자동으로
-  `CHUNKED`로 전이되지 않는다. list/document 수집 스케줄러는 계속 켜져 있어
+- `companies`: 557건, `disclosures`: 1958건, `chunks`: 5,201건
+- `document_status` 분포: `PENDING` 1642 / `PARSED` 148 / `CHUNKED` 147 / `NO_DOCUMENT` 16 / `FAILED` 5
+  (`FAILED` 5건은 전부 `감사보고서`류 — document API ZIP 안에 `{rcept_no}.xml`을
+  안 준 케이스. 오늘 손댄 XmlTextExtractor와는 무관, 재시도 로직은 아직 없음)
+- `chunks.chunk_source` 분포: `SECTION` 5,094 / `WHOLE_DOCUMENT` 86 / `SLIDING_WINDOW` 21
+  (정규식 폴백 비율이 42.1%→12.5%로 줄면서 대부분의 청크가 구조 기반으로 전환됨 —
+  dart-findings.md 2-7 참고)
+- `ChunkingScheduler`는 `chunking.collector.enabled: false`로 꺼둔 상태 — 표
+  미압축은 실익이 작다고 판단해 보류(아래 3절 1번), 임베딩 착수 전 재확인할 것.
+  list/document 수집 스케줄러는 계속 켜져 있어
   백엔드를 띄워두면 `PENDING`/`PARSED` 비율은 계속 올라간다.
 
 ### 실행 방법 요약
@@ -187,22 +223,21 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 
 ## 3. 다음에 할 일
 
-list API 수집, document 원문 수집, 청킹까지 완료. 순서는 아래 우선순위대로.
+list API 수집, document 원문 수집, 청킹까지 완료. 청크 폭증 문제도 해결됐다.
+순서는 아래 우선순위대로.
 
-1. **[우선] 청크 폭증 문서 대응** — `SLIDING_WINDOW` 청크를 실제로 열어봐서 원인을
-   두 가지로 분리했다(dart-findings.md 2-5, 2-6).
-   - **[완료] CSS 오염 제거** — 일부 "자율공시"가 HTML 보일러플레이트를 써서 CSS가
-     그대로 청크에 남던 문제. `XmlTextExtractor`에 head/style/script 블록 제거
-     추가, 영향받은 18건 재정제 완료(위 1절 참고).
-   - **[남음] 표 미압축** — 정규식 폴백 문서는 표가 압축되지 않고 셀이 한 줄씩
-     풀려서 텍스트가 부풀어난다(실측: 786,390자 문서 하나가 1,210개 청크 중
-     872개(72.1%)가 이 패턴). 저품질 필터로는 안 걸러짐(실제 회사명/숫자라
-     "의미 있는 문자 비율"이 높게 나옴 — 데이터로 확인됨). 임베딩 비용이 청크
-     개수에 비례하므로 **임베딩을 붙이기 전에 반드시 처리**해야 한다. 검토할 옵션:
-     - 정규식 폴백에서도 표를 압축(`DOM 경로의 appendTableRows()`와 일관되게)
-     - 문서당 청크 수 상한
-     - 세 옵션을 조합할 수도 있음. 착수 전에 폴백 문서가 XML이 깨진 상태에서
-       표 구조를 어디까지 안전하게 복원할 수 있는지 먼저 판단할 것
+1. **[완료] 청크 폭증 문서 대응** — `SLIDING_WINDOW` 청크를 실제로 열어봐서 원인을
+   두 가지로 분리하고 둘 다 해결했다(dart-findings.md 2-6, 2-7).
+   - CSS 오염 제거 — 일부 "자율공시"가 HTML 보일러플레이트를 써서 CSS가 그대로
+     청크에 남던 문제. `XmlTextExtractor`에 head/style/script 블록 제거 추가.
+   - 표 미압축 — 원래는 "정규식 폴백에서도 표 압축"을 검토했는데, 실측해보니 폴백
+     원인 대부분(이스케이프 안 된 `&`, `<표1>`류 가짜 태그)이 복구 가능해서 **폴백
+     자체를 거의 안 타게 만드는 쪽**으로 해결했다. `XmlTextExtractor`를 3단계
+     파싱(엄격→정제 후 재시도→정규식 폴백)으로 재구성. 121건 재정제+재청킹 결과:
+     폴백 비율 42.1%→12.5%, 786,390자 문서의 "표 나열형" 청크 비율 72.1%→3.6%.
+     남은 `SLIDING_WINDOW`는 21개뿐이라 추가 압축 작업은 보류.
+   - 부수 발견: 정규식 폴백이 `<개정 2009.2.3>` 같은 법령 인용 표기를 태그로
+     오인해 **에러 없이 조용히 삭제**하고 있었다(데이터 손실, dart-findings.md 2-7).
 2. **[그다음] 임베딩** — OpenAI 크레딧 충전 후 착수. `chunks.embedding IS NULL`인
    청크를 배치로 찾아 `text-embedding-3-small`(1536차원)로 임베딩.
    `ChunkingService`가 임베딩 코드를 전혀 참조하지 않게 분리해뒀으므로, 별도
@@ -213,20 +248,15 @@ list API 수집, document 원문 수집, 청킹까지 완료. 순서는 아래 �
    `chunks.embedding_model`에 사용한 모델명 기록(모델 교체 시 재임베딩 대상 식별용).
 3. **[그다음] ElasticSearch 색인** — 비용 0, 크레딧 없이 바로 가능. `chunks.content`를
    ElasticSearch에 색인(`chunks.embedding`은 pgvector 색인용 — RRF 융합을 위해 두
-   검색의 단위를 청크로 일치시키는 설계, [docs/erd.md](./erd.md) 참고). 청크 폭증
-   문제를 먼저 해결해야 색인 개수도 합리적인 수준이 되므로 1번 이후에 진행.
+   검색의 단위를 청크로 일치시키는 설계, [docs/erd.md](./erd.md) 참고).
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
-- **정규식 폴백 경로가 실제로 ~30% 발동, 청킹 구조 정보를 통째로 잃음** — 이전에는
-  "미검증"이었지만 실제 배치(20건)로 확인: 6건이 폴백을 탔고, 이 경로는
-  `[[SECTION]]` 마커도 표 라벨-값 구조(`" | "` 조합)도 만들지 않는다. 청킹은 마커
-  유무로 전략을 분기(`chunk_source`)해 대응했지만, 폴백 경로 자체(`lxml recover`
-  같은 관대한 파서 도입)는 아직 고치지 않았다 — 검색 품질을 측정해 `SLIDING_WINDOW`
-  경로 성능이 눈에 띄게 나쁘면 그때 재검토. 상세: dart-findings.md 2-5.
-- **`SLIDING_WINDOW` 경로가 극단적으로 큰 문서를 만들 수 있음** — 786,390자
-  문서 하나가 청크 1,210개, 그중 72.1%가 표 미압축 패턴. 3절 1번(우선순위)에서
-  착수 예정이라 여기서는 중복 설명하지 않음.
+- **[해결됨] 정규식 폴백 경로가 청킹 구조 정보를 통째로 잃던 문제** — 처음엔
+  마커 유무로 전략을 분기(`chunk_source`)하는 우회책으로 대응했었는데, 나중에
+  폴백 자체를 거의 안 타게 만드는 근본 해결로 바꿨다. `XmlTextExtractor`의 3단계
+  파싱(엄격→정제 후 재시도→정규식 폴백) 도입 후 폴백 비율 42.1%→12.5%, 786,390자
+  문서의 표 미압축 청크 비율 72.1%→3.6%까지 개선. 상세: dart-findings.md 2-5, 2-7.
 - **JPA: IDENTITY 생성 전략 + orphanRemoval 컬렉션을 재사용할 때는 clear() 직후
   flush 필요** — `Chunk.id`가 `GenerationType.IDENTITY`라 새 엔티티 INSERT가
   즉시 실행되는데, `orphanRemoval=true`로 인한 기존 엔티티 DELETE는 flush
