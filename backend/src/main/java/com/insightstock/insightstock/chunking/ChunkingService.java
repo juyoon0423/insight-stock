@@ -15,7 +15,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 // PARSED 상태 disclosure를 청크로 분할한다. raw_content에 XmlTextExtractor가 남긴
 // "[[SECTION]]" 마커 유무로 전략을 분기한다(dart-findings.md 2-5 참고): 마커가 있으면
@@ -31,6 +32,7 @@ public class ChunkingService {
     private static final Pattern MEANINGFUL_CHAR_PATTERN = Pattern.compile("[\\uAC00-\\uD7A3a-zA-Z0-9]");
 
     private final DisclosureRepository disclosureRepository;
+    private final TransactionTemplate transactionTemplate;
     private final int wholeDocumentCharThreshold;
     private final int slidingWindowSize;
     private final int slidingWindowOverlap;
@@ -40,6 +42,7 @@ public class ChunkingService {
 
     public ChunkingService(
             DisclosureRepository disclosureRepository,
+            PlatformTransactionManager transactionManager,
             @Value("${chunking.whole-document-char-threshold}") int wholeDocumentCharThreshold,
             @Value("${chunking.sliding-window.size}") int slidingWindowSize,
             @Value("${chunking.sliding-window.overlap}") int slidingWindowOverlap,
@@ -47,6 +50,7 @@ public class ChunkingService {
             @Value("${chunking.empty-content-filter.min-length}") int emptyContentMinLength,
             @Value("${chunking.empty-content-filter.min-meaningful-ratio}") double emptyContentMinMeaningfulRatio) {
         this.disclosureRepository = disclosureRepository;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.wholeDocumentCharThreshold = wholeDocumentCharThreshold;
         this.slidingWindowSize = slidingWindowSize;
         this.slidingWindowOverlap = slidingWindowOverlap;
@@ -55,10 +59,6 @@ public class ChunkingService {
         this.emptyContentMinMeaningfulRatio = emptyContentMinMeaningfulRatio;
     }
 
-    // disclosure.getChunks()가 지연 로딩 컬렉션이라 세션이 열려 있어야 접근할 수 있다.
-    // 배치 전체를 하나의 트랜잭션으로 묶는다 (문서별 실패는 내부 try/catch로 흡수하므로
-    // 롤백 전파 없이 나머지 문서는 그대로 커밋된다).
-    @Transactional
     public void chunkPending(int limit) {
         List<Disclosure> targets = disclosureRepository.findByDocumentStatus(
                 DocumentStatus.PARSED, PageRequest.of(0, limit, Sort.by("id")));
@@ -70,32 +70,51 @@ public class ChunkingService {
 
         log.info("PARSED 공시 {}건 청킹 시작", targets.size());
         for (Disclosure disclosure : targets) {
-            chunkDisclosure(disclosure);
+            chunkOneInOwnTransaction(disclosure.getId(), disclosure.getRceptNo());
         }
     }
 
-    private void chunkDisclosure(Disclosure disclosure) {
-        String rceptNo = disclosure.getRceptNo();
+    // 문서 하나당 별도 트랜잭션으로 처리한다. 배치 전체를 하나의 트랜잭션으로 묶었을 때,
+    // 한 문서의 실패(예: 유니크 제약 위반)가 Postgres 커넥션을 "current transaction is
+    // aborted" 상태로 만들어 이후 나머지 모든 문서가 연쇄적으로 실패하는 버그가 있었다 -
+    // try/catch로 예외를 흡수해도 트랜잭션 자체가 이미 오염된 상태라 소용없었다.
+    private void chunkOneInOwnTransaction(Long disclosureId, String rceptNo) {
         try {
-            List<Chunk> chunks = buildChunks(disclosure.getRawContent());
-
-            disclosure.getChunks().clear();
-            int index = 0;
-            for (Chunk chunk : chunks) {
-                chunk.setChunkIndex(index++);
-                chunk.setDisclosure(disclosure);
-                disclosure.getChunks().add(chunk);
-            }
-            disclosure.setDocumentStatus(DocumentStatus.CHUNKED);
-            disclosureRepository.save(disclosure);
-
-            if (chunks.isEmpty()) {
-                log.warn("공시 청킹 결과 0개 청크 (rcept_no={}) - 필터링으로 전부 제거됨", rceptNo);
-            } else {
-                log.info("공시 청킹 완료 (rcept_no={}): {}개 청크", rceptNo, chunks.size());
-            }
+            transactionTemplate.executeWithoutResult(status -> chunkDisclosure(disclosureId));
         } catch (Exception e) {
             log.error("공시 청킹 실패 (rcept_no={})", rceptNo, e);
+        }
+    }
+
+    private void chunkDisclosure(Long disclosureId) {
+        // chunkPending()에서 조회한 엔티티는 트랜잭션 밖(영속성 컨텍스트 없음)이라 그대로
+        // 쓰면 지연 로딩 컬렉션 접근 시 LazyInitializationException이 난다. 이 트랜잭션
+        // 안에서 다시 조회해야 세션이 붙는다.
+        Disclosure disclosure = disclosureRepository.findById(disclosureId).orElseThrow();
+        String rceptNo = disclosure.getRceptNo();
+
+        List<Chunk> chunks = buildChunks(disclosure.getRawContent());
+
+        // orphanRemoval로 인한 기존 청크 DELETE는 flush 시점까지 지연되는데, Chunk.id가
+        // IDENTITY 생성 전략이라 새 청크의 INSERT는 즉시 실행된다. 재청킹 시 chunk_index를
+        // 그대로 재사용하면 DELETE보다 INSERT가 먼저 나가 uk_chunks_disclosure_chunk_index
+        // 유니크 제약을 위반한다 - clear() 직후 flush로 DELETE를 먼저 확정시켜 피한다.
+        disclosure.getChunks().clear();
+        disclosureRepository.saveAndFlush(disclosure);
+
+        int index = 0;
+        for (Chunk chunk : chunks) {
+            chunk.setChunkIndex(index++);
+            chunk.setDisclosure(disclosure);
+            disclosure.getChunks().add(chunk);
+        }
+        disclosure.setDocumentStatus(DocumentStatus.CHUNKED);
+        disclosureRepository.save(disclosure);
+
+        if (chunks.isEmpty()) {
+            log.warn("공시 청킹 결과 0개 청크 (rcept_no={}) - 필터링으로 전부 제거됨", rceptNo);
+        } else {
+            log.info("공시 청킹 완료 (rcept_no={}): {}개 청크", rceptNo, chunks.size());
         }
     }
 
