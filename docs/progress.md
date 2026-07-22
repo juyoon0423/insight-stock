@@ -266,14 +266,30 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    건수 일치 확인. Nori 사용자 사전(`보고서`/`신고서`/`설명서`/`특수관계인`/
    `감사인`/`이사회` 6개)까지 실측 검증 후 반영(dart-findings.md 2-8 — "보고서"가
    기본 사전으로는 깨지는 걸 코드 짜기 전에 `_analyze` API로 미리 발견한 사례).
-3. **[남음] 임베딩** — OpenAI 크레딧 충전 후 착수. `chunks.embedding IS NULL`인
-   청크를 배치로 찾아 `text-embedding-3-small`(1536차원)로 임베딩.
-   `ChunkingService`가 임베딩 코드를 전혀 참조하지 않게 분리해뒀으므로, 별도
-   `EmbeddingService` + 임베딩 클라이언트 인터페이스(예:
-   `EmbeddingClient.embed(String text): float[]`)를 새 패키지(예: `embedding/`)에
-   추가하는 형태가 될 것. `document_status`에 별도 `EMBEDDED` 상태는 두지 않고
-   `chunks.embedding IS NULL` 자체를 "임베딩 대기" 표시로 쓴다.
-   `chunks.embedding_model`에 사용한 모델명 기록(모델 교체 시 재임베딩 대상 식별용).
+3. **[다음 세션] 임베딩** — OpenAI 크레딧 $5 충전 완료(2026-07-22). 단,
+   `.env`에 `OPENAI_API_KEY`는 아직 등록 안 함 — 다음 세션에서 키 발급/등록부터
+   확인할 것. 진행 순서:
+   1. **비용 추정을 먼저 한다** — `text-embedding-3-small` 단가 기준으로
+      `chunks` 전체 5,201건(+ 향후 늘어날 분량)의 예상 토큰 수/비용을 계산해서
+      사용자에게 먼저 보여주고 진행 여부를 확인받을 것. `chunks.token_count`
+      컬럼이 있지만 아직 채워진 적 없음 — 임베딩 전에 토큰 수 계산이 필요.
+   2. **배치 API 활용을 검토한다** — OpenAI embeddings API는 한 번의 호출에
+      여러 텍스트를 배열로 넘길 수 있어(단건 대비 저렴/빠름), `EmbeddingClient`
+      인터페이스를 설계할 때 이걸 살릴 수 있는 시그니처로 만들 것(예:
+      `List<float[]> embed(List<String> texts)`).
+   3. **구현은 기존 패턴 그대로** — `ChunkingService`가 임베딩 코드를 전혀
+      참조하지 않게 이미 분리해뒀으므로, 새 패키지(예: `embedding/`)에
+      `EmbeddingService`(+`EmbeddingScheduler`, 기존 서비스들과 동일하게
+      문서/청크 단위 독립 트랜잭션)와 `EmbeddingClient` 인터페이스를 추가하는
+      형태. **`chunks.embedding IS NULL`인 청크만 골라서 처리**해 이미 임베딩된
+      청크에 중복 호출이 나가지 않게 한다(재시도해도 안전한 멱등 구조).
+      `document_status`에 별도 `EMBEDDED` 상태는 두지 않고 `embedding IS NULL`
+      자체를 "대기" 표시로 쓴다. `chunks.embedding_model`에 사용한 모델명을
+      기록(모델 교체 시 재임베딩 대상 식별용).
+   4. **소량(10개)부터 검증** — 청킹/색인 때와 같은 방식으로, 전체 5,201건에
+      바로 돌리지 말고 10개만 먼저 임베딩해서 정상 저장/조회되는지 확인받은
+      다음에 확장할 것.
+
    임베딩까지 끝나면 RRF(Reciprocal Rank Fusion)로 BM25(ES)와 벡터(pgvector)
    검색 결과를 융합하는 단계가 남는다([docs/erd.md](./erd.md) 참고).
 
@@ -330,6 +346,15 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
   (`elasticsearch/chunk-index-settings.json`)에 6개 단어만 최소로 추가했는데,
   나중에 실제 검색 로그를 보면서 비슷하게 깨지는 단어가 더 나오면 이 파일에
   추가하면 된다. 상세: dart-findings.md 2-8.
+- **[미해결] `감사보고서`류 5건 `FAILED`** — document API가 준 ZIP 안에
+  `{rcept_no}.xml` 파일이 없는 케이스(`DocumentCollectorService.
+  extractXmlFromZip`에서 발생). 전부 `감사보고서`/`연결감사보고서` 유형에
+  몰려 있어 이 report_nm이 ZIP 내부 파일명 규칙이 다를 가능성이 있음 — 다음에
+  이 유형 document API 응답을 직접 열어봐서 확인할 것. 재시도 로직은 아직 없음.
+- **[미해결] `SLIDING_WINDOW` 21개(표 나열형)** — 정제로도 복구 안 되는 극소수
+  잔여 케이스. 표 압축 별도 구현은 보류하기로 했음(실익 대비 과함). **임베딩
+  붙인 뒤 실제 검색 품질을 보고 이 21개가 눈에 띄게 나쁘면 그때 재검토**하기로
+  결정(dart-findings.md 2-5, 2-7 / progress.md 3절 1번).
 
 ## 5. 다음 세션 시작 방법
 
@@ -350,13 +375,16 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
 ### 참고할 추가 컨텍스트
 
 - `.env`에 `DART_API_KEY`, `POSTGRES_USER`, `POSTGRES_PASSWORD`가 이미 채워져 있어야
-  백엔드가 뜬다 (레포에는 `.env.example`만 있음, `.env`는 로컬에만 존재). 임베딩
-  작업을 시작하면 `OPENAI_API_KEY`도 `.env`에 추가해야 함 (아직 없음).
+  백엔드가 뜬다 (레포에는 `.env.example`만 있음, `.env`는 로컬에만 존재).
+  **OpenAI 크레딧은 $5 충전 완료(2026-07-22)했지만 `OPENAI_API_KEY`는 아직
+  `.env`에 등록 안 함** — 다음 세션 시작 시 키 발급/등록부터 확인할 것.
 - pgvector 매핑(`Chunk.embedding`)은 이미 검증 완료된 상태이니, 임베딩 관련 작업을
   다시 처음부터 조사할 필요 없음 — `VectorType`을 그대로 재사용.
-- list/document/chunking 파이프라인(`repository/`, `dart/`, `collector/`,
-  `chunking/` 패키지)은 이미 완성되어 백엔드를 띄워두면 계속 돌아간다. 다음
-  작업(임베딩)은 이 위에 새 서비스(예: `embedding/` 패키지의 `EmbeddingService`)를
-  추가하는 형태가 될 것 — `ChunkRepository`는 아직 없음(Disclosure가 cascade로
-  chunks를 관리하는 애그리게이트 루트라 지금까지는 필요 없었음), 임베딩 배치가
-  `chunks WHERE embedding IS NULL`을 직접 조회하려면 추가해야 함.
+- list/document/chunking/indexing 파이프라인(`repository/`, `dart/`, `collector/`,
+  `chunking/`, `indexing/` 패키지)은 이미 완성되어 백엔드를 띄워두면 계속 돌아간다.
+  다음 작업(임베딩)은 이 위에 새 서비스(예: `embedding/` 패키지의
+  `EmbeddingService`)를 추가하는 형태가 될 것 — `ChunkRepository`는 아직 없음
+  (Disclosure가 cascade로 chunks를 관리하는 애그리게이트 루트라 지금까지는
+  필요 없었음), 임베딩 배치가 `chunks WHERE embedding IS NULL`을 직접 조회하려면
+  추가해야 함. 임베딩 착수 순서(비용 추정 → 배치 API 검토 → 구현 → 10개 테스트 →
+  확장)는 3절 3번 참고.
