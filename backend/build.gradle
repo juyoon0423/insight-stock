@@ -27,6 +27,9 @@ dependencies {
 	implementation 'org.flywaydb:flyway-database-postgresql'
 	implementation 'me.paulschwarz:spring-dotenv:5.1.0'
 	implementation 'com.pgvector:pgvector:0.1.6'
+	// OpenAI 임베딩 API 호출 전, 청크별 정확한 토큰 수를 로컬에서 계산하기 위한 tiktoken(cl100k_base)
+	// 호환 라이브러리. 8,191 토큰 초과 청크를 API 호출 전에 걸러내고 chunks.token_count를 정확히 채운다.
+	implementation 'com.knuddels:jtokkit:1.1.0'
 
 	runtimeOnly 'org.postgresql:postgresql'
 

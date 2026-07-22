@@ -55,3 +55,18 @@ indexing:
     enabled: true
     fixed-delay-ms: 600000
     batch-size: 20
+
+embedding:
+  api:
+    base-url: https://api.openai.com/v1
+    key: ${OPENAI_API_KEY}
+  model: text-embedding-3-small
+  # OpenAI 임베딩 API 요청 1건에 담을 청크 수(비용 실측 결과 평균 654토큰/청크 기준
+  # 100개 ≈ 65K토큰/요청 - 여유 있음. 2,048개인 API 배열 한도보다 훨씬 작게 잡아
+  # 요청 1건 실패 시 손해를 제한).
+  request-batch-size: 100
+  collector:
+    # 전체 배치 완료(2026-07-22, 5,191건 전부 처리, 실패 0건) - 다시 비활성화 상태로 복귀.
+    enabled: false
+    fixed-delay-ms: 600000
+    batch-size: 20
