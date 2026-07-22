@@ -206,9 +206,26 @@
   **$0.068**(예측과 동일) — 앞으로는 API를 호출하지 않고도 토큰 수/비용을
   정확히 예측할 수 있다는 뜻이다.
 
-**하이브리드 검색의 재료가 모두 준비됐다** — ElasticSearch 색인(BM25 키워드
-검색)과 pgvector 임베딩(벡터 의미검색) 둘 다 5,201건 전체에 대해 완료됐다.
-남은 건 두 결과를 RRF로 융합하는 검색 엔진 자체뿐이다.
+- **하이브리드 검색 엔진(BM25 + 벡터 + RRF 융합)** — `search/` 패키지에
+  `KeywordSearchService`(ES BM25), `VectorSearchService`(pgvector 코사인,
+  `EmbeddingClient` 재사용으로 질의도 색인과 같은 모델로 임베딩), `RrfFuser`
+  (순수 함수 - 단위 테스트 3개로 RRF 공식 자체 검증), `HybridSearchService`
+  (`CompletableFuture`로 두 검색을 병렬 실행 후 RRF 융합, Top-K만 hydrate)를
+  구현했다. 각 검색은 후보 50개씩 가져온 뒤 RRF로 합친다 - top-k(10개)만
+  가져오면 두 결과가 겹칠 여지가 거의 없어 RRF가 사실상 무의미해지기 때문이다.
+
+  실제 회사/공시 데이터 기반 질의 3종(키워드 지향/의미 지향/일반)으로 검증했다.
+  가장 값진 확인은 RRF가 "합의(consensus)를 우대"한다는 걸 수치로 본 것이다 -
+  키워드 1위(벡터 39위)인 청크보다 키워드 3위+벡터 4위인 청크의 최종 RRF
+  점수가 더 높았다(한쪽만 압도적이어도 다른 쪽에서 안 나오면 밀림). 반대로
+  검색이 실패하는 사례도 정직하게 발견했다: "차입금"을 "빌린 돈"으로
+  패러프레이즈한 질의에서 정답 청크가 BM25 top-10에도 벡터 top-200에도 안
+  잡혔다 - 원인 분석과 향후 검토 옵션은 dart-findings.md 2-9, 아래 4절 참고.
+
+  HNSW 인덱스 사용 여부도 `EXPLAIN`으로 확인했다: `<=>` 연산자로 정렬하면
+  `enable_seqscan=off` 강제 시 `idx_chunks_embedding_hnsw`가 정확히 잡히지만,
+  5,201건 규모에서는 플래너가 기본적으로 `Seq Scan`을 선택한다 - 인덱스 결함이
+  아니라 테이블이 작을 때 흔한 정상 동작(데이터가 늘면 자연히 인덱스를 쓰게 됨).
 
 ## 2. 현재 프로젝트 상태 요약
 
@@ -246,7 +263,8 @@ insight-stock/
 │       ├── collector/     # DisclosureCollectorService(+Scheduler), DocumentCollectorService(+Scheduler)
 │       ├── chunking/      # ChunkingService(+Scheduler)
 │       ├── indexing/      # ChunkDocument, ChunkDocumentRepository, IndexingService(+Scheduler)
-│       └── embedding/     # EmbeddingClient/OpenAiEmbeddingClient, TokenCounter, EmbeddingService(+Scheduler), dto/
+│       ├── embedding/     # EmbeddingClient/OpenAiEmbeddingClient, TokenCounter, EmbeddingService(+Scheduler), dto/
+│       └── search/        # KeywordSearchService, VectorSearchService, RrfFuser, HybridSearchService, dto/
 │   └── src/main/resources/
 │       ├── application.yml
 │       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
@@ -297,8 +315,7 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 ## 3. 다음에 할 일
 
 list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSearch 색인,
-임베딩까지 완료. **하이브리드 검색(BM25+벡터)에 필요한 재료가 모두 준비됐고,
-남은 건 검색 엔진 자체뿐이다.**
+임베딩, 하이브리드 검색 엔진(RRF 융합)까지 완료. **다음은 RAG 답변 생성 단계다.**
 
 1. **[완료] 청크 폭증 문서 대응** — `SLIDING_WINDOW` 청크를 실제로 열어봐서 원인을
    두 가지로 분리하고 둘 다 해결했다(dart-findings.md 2-6, 2-7). CSS 오염 제거 +
@@ -316,16 +333,30 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    3센트뿐이라 채택하지 않았다. 실제 토큰 수가 사전 추정(Python tiktoken)/로컬
    계산(Java jtokkit)/OpenAI 서버 응답 세 방법 모두에서 정확히 일치해, 앞으로는
    API 호출 없이도 비용을 정확히 예측할 수 있음을 확인했다. 상세는 위 1절 참고.
-4. **[다음 세션] 하이브리드 검색 엔진** — RRF(Reciprocal Rank Fusion)로 BM25와
-   벡터 검색 결과를 융합하는 단계([docs/erd.md](./erd.md) 참고). 진행 순서(안):
-   1. ElasticSearch BM25 검색(`ChunkDocumentRepository` 또는
-      `ElasticsearchOperations`+`NativeQuery`)과 pgvector 코사인 유사도 검색
-      (`chunks.embedding <=> :queryVector`, HNSW 인덱스 활용)을 같은 질의에 대해
-      동시에 수행.
-   2. 두 결과를 RRF로 순위 융합 — 문서/청크 단위가 이미 일치하므로(양쪽 다
-      `chunk.id` 기준) 융합 로직 자체는 단순한 랭크 합산으로 시작 가능.
-   3. 융합된 순위에서 Top-K 청크를 선별해 반환(추후 RAG 답변 생성 단계의 입력이
-      될 자리).
+4. **[완료] 하이브리드 검색 엔진** — `search/` 패키지에 `KeywordSearchService`
+   (ES BM25, `ElasticsearchOperations`+`NativeQuery`)와 `VectorSearchService`
+   (pgvector 코사인, `ChunkRepository` native query + `EmbeddingClient` 재사용)를
+   각각 만들고, `RrfFuser`(순수 함수, DB/ES/API 의존성 없음 - 단위 테스트 3개로
+   공식 자체를 검증)로 융합, `HybridSearchService`가 둘을 `CompletableFuture`로
+   병렬 실행(전용 4-스레드 풀) 후 RRF로 합쳐 Top-K만 hydrate해서 반환한다.
+   각 검색은 후보 50개씩 가져온다(top-k 10개만 가져오면 RRF가 무의미해지므로).
+
+   실제 질의 3종(회사/공시 실데이터 기준)으로 검증했다:
+   - **RRF의 "합의 우대"를 실측으로 확인** — 키워드 1위(벡터 39위)인 청크보다
+     키워드 3위+벡터 4위인 청크의 최종 RRF 점수가 더 높았다. 한쪽에서 압도적
+     1위여도 다른 쪽에서 밀리면, 양쪽에서 고르게 상위권인 청크에 최종 순위가
+     밀린다는 걸 확인.
+   - **벡터 검색의 한계도 정직하게 발견** — "차입금"을 "빌린 돈"으로 패러프레이즈한
+     질의에서, 미리 확인해둔 정답 청크가 BM25 top-10에도 벡터 top-200에도 안 잡힘.
+     상세와 원인 분석은 dart-findings.md 2-9, 4절 참고.
+   - HNSW 인덱스가 실제로 쓰이는지 `EXPLAIN`으로 확인 — `enable_seqscan=off`로
+     강제하면 `idx_chunks_embedding_hnsw`가 정확한 연산자(`<=>`)로 잡힘. 다만
+     5,201건 규모에서는 플래너가 기본적으로 `Seq Scan`을 더 싸다고 판단해 인덱스를
+     안 씀 — 인덱스 결함이 아니라 테이블이 작을 때의 정상적인 플래너 동작(데이터가
+     늘어나면 자연히 선택될 것).
+
+   다음 단계는 RAG 답변 생성(LLM에 Top-K 청크를 근거로 넘겨 출처 명시 답변 생성)과
+   이를 노출할 Controller/API 계층.
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
@@ -389,6 +420,15 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
   잔여 케이스. 표 압축 별도 구현은 보류하기로 했음(실익 대비 과함). **임베딩
   붙인 뒤 실제 검색 품질을 보고 이 21개가 눈에 띄게 나쁘면 그때 재검토**하기로
   결정(dart-findings.md 2-5, 2-7 / progress.md 3절 1번).
+- **[미해결] 재무 수치가 조밀한 서술형 청크는 BM25/벡터 둘 다 놓칠 수 있음** —
+  하이브리드 검색 검증 중(2026-07-23) 발견. 정상적으로 청킹된(`chunk_source=
+  SECTION`, `chunk_type=TEXT`) 문법적으로 온전한 문단인데도, 패러프레이즈 질의에
+  대해 BM25 top-10/벡터 top-200(전체 5,201건 중) 모두에서 안 잡힌 사례를
+  확인했다. **위 `SLIDING_WINDOW`와는 원인이 다르다** — 그건 청킹 메커니즘
+  결함이고 이건 청킹은 멀쩡한데 임베딩/질의가 수치 조밀 텍스트를 잘 못 담는
+  현상이다(다만 "재무 수치 많은 콘텐츠가 검색에 약하다"는 같은 증상의 다른
+  얼굴이라 나중에 같이 검토할 가치는 있음). 상세 및 향후 검토 옵션(수치 정규화,
+  청크 요약문 추가, 질의 확장 등, 아직 미결정)은 dart-findings.md 2-9 참고.
 
 ## 5. 다음 세션 시작 방법
 
