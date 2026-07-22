@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
@@ -17,13 +19,15 @@ import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
-// DART 원문 XML을 정제된 텍스트로 바꾼다. 일부 문서는 본문에 이스케이프되지 않은 '<' 문자가
-// 섞여 있어 well-formed XML이 아닐 수 있으므로(dart-findings.md 2-2), 엄격한 파싱이 실패하면
-// 정규식 기반 태그 제거로 폴백한다. TABLE은 행 단위로 "셀1 | 셀2" 형태로 직렬화해 라벨-값
-// 관계가 깨지지 않게 한다(dart-findings.md 2-4). 일부 "자율공시" 유형은 DART4 스키마가 아니라
-// <html><head><STYLE>...</STYLE></head> 형태의 HTML 보일러플레이트를 쓰는데(dart-findings.md 2-6),
-// 이 CSS 텍스트는 태그가 아니라서 단순 태그 제거로는 안 지워지므로 head/style/script 블록을
-// 내용째로 먼저 잘라낸다.
+// DART 원문 XML을 정제된 텍스트로 바꾼다. 3단계로 시도한다:
+//   1) 엄격 파싱 - 대부분의 문서는 이걸로 끝난다.
+//   2) 실패하면 well-formedness를 깨는 흔한 패턴(이스케이프 안 된 '&', <표1>/<개정 2009.2.3>
+//      같은 가짜 태그 - dart-findings.md 2-2, 2-7)을 정제해서 재시도한다. 성공하면 DOM 경로를
+//      그대로 타므로 TABLE 압축(appendTableRows)과 섹션 마커([[SECTION]])를 그대로 얻는다 -
+//      정규식 폴백에서 표를 다시 압축하는 것보다 훨씬 정확하다.
+//   3) 그래도 실패하면(예: HTML 보일러플레이트 자율공시, dart-findings.md 2-6) 정규식 태그
+//      제거로 최종 폴백한다.
+// TABLE은 행 단위로 "셀1 | 셀2" 형태로 직렬화해 라벨-값 관계가 깨지지 않게 한다(dart-findings.md 2-4).
 @Slf4j
 public final class XmlTextExtractor {
 
@@ -31,17 +35,27 @@ public final class XmlTextExtractor {
     }
 
     public static String extract(String xml) {
-        Document document;
-        try {
-            document = parse(xml);
-        } catch (ParserConfigurationException | SAXException | IOException e) {
-            log.warn("XML 엄격 파싱 실패, 정규식 태그 제거로 폴백: {}", e.getMessage());
+        Optional<Document> document = tryParse(xml);
+        if (document.isEmpty()) {
+            log.warn("XML 엄격 파싱 실패, 정제 후 재시도");
+            document = tryParse(sanitize(xml));
+        }
+        if (document.isEmpty()) {
+            log.warn("정제 후에도 파싱 실패, 정규식 태그 제거로 폴백");
             return normalizeWhitespace(regexStrip(xml));
         }
 
         StringBuilder text = new StringBuilder();
-        walk(document.getDocumentElement(), text);
+        walk(document.get().getDocumentElement(), text);
         return normalizeWhitespace(text.toString());
+    }
+
+    private static Optional<Document> tryParse(String xml) {
+        try {
+            return Optional.of(parse(xml));
+        } catch (ParserConfigurationException | SAXException | IOException e) {
+            return Optional.empty();
+        }
     }
 
     private static Document parse(String xml) throws ParserConfigurationException, SAXException, IOException {
@@ -107,6 +121,43 @@ public final class XmlTextExtractor {
                 text.append(String.join(" | ", cells)).append('\n');
             }
         }
+    }
+
+    // 이스케이프 안 된 '&'만 &amp;로 바꾼다 - 이미 유효한 엔티티/문자 참조(&amp; &lt; &#44; &#x2C; 등)는
+    // 건드리지 않아야 이중 이스케이프(&amp;amp;)로 원문을 훼손하지 않는다.
+    private static final Pattern BARE_AMPERSAND =
+            Pattern.compile("&(?!(?:amp|lt|gt|apos|quot|#\\d+|#x[0-9a-fA-F]+);)");
+
+    // <...> 덩어리 하나가 "진짜 태그처럼 생겼는지" 판별한다. DART4 스키마의 실제 태그는 전부
+    // ASCII 문자로 시작하는 이름을 쓰므로(TABLE, TR, TD, DOCUMENT-NAME 등), <표1>이나
+    // <자본시장과 금융투자업에 관한 법률>처럼 한글이 섞인 인용/서술 표기는 이 패턴에 애초에
+    // 안 걸려 안전하게 "가짜"로 판별된다. XML 선언(<?xml ...?>)과 주석(<!--...-->)은 별도로
+    // 허용하지 않으면 오탐(진짜 구조를 텍스트로 오인)이 나므로 명시적으로 포함한다.
+    private static final Pattern REAL_TAG_LIKE = Pattern.compile(
+            "(?:</?[A-Za-z][A-Za-z0-9\\-]*(?:\\s[^<>]*)?/?>|<\\?[^<>]*\\?>|<!--.*?-->)",
+            Pattern.DOTALL);
+    private static final Pattern ANGLE_BRACKET_CHUNK = Pattern.compile("<[^<>]*>");
+
+    // well-formedness를 깨는 두 가지 흔한 패턴만 정제한다. "진짜 태그가 아닌 것으로 판별된
+    // <...>"만 이스케이프하므로, 정상적인 구조(TABLE/TR/TD/TITLE 등)는 전혀 건드리지 않는다.
+    private static String sanitize(String xml) {
+        String withEscapedAmpersands = BARE_AMPERSAND.matcher(xml).replaceAll("&amp;");
+
+        StringBuilder result = new StringBuilder();
+        Matcher matcher = ANGLE_BRACKET_CHUNK.matcher(withEscapedAmpersands);
+        int lastEnd = 0;
+        while (matcher.find()) {
+            result.append(withEscapedAmpersands, lastEnd, matcher.start());
+            String chunk = matcher.group();
+            if (REAL_TAG_LIKE.matcher(chunk).matches()) {
+                result.append(chunk);
+            } else {
+                result.append(chunk.replace("<", "&lt;").replace(">", "&gt;"));
+            }
+            lastEnd = matcher.end();
+        }
+        result.append(withEscapedAmpersands, lastEnd, withEscapedAmpersands.length());
+        return result.toString();
     }
 
     // head/style/script는 내용 자체가 태그가 아닌 CSS/JS 텍스트라 <[^>]+>로는 안 지워진다.

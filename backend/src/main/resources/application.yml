@@ -40,8 +40,7 @@ chunking:
     min-length: 10
     min-meaningful-ratio: 0.3
   collector:
-    # 청크 폭증 문제(progress.md 3절 1번, 표 미압축) 조사가 끝날 때까지 잠시 비활성화.
-    # 다시 켤 때는 true로 바꾸거나 이 줄을 지우면 된다(matchIfMissing=true).
+    # 표 압축(2단계)이 여전히 필요한지 판단할 때까지 비활성화 상태 유지.
     enabled: false
     # 10분마다 PARSED 공시를 batch-size건씩 청킹한다.
     fixed-delay-ms: 600000
