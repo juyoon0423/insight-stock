@@ -169,7 +169,46 @@
   건수(5,201)와 ES 문서 수(5,201) 일치, `chunk_source` 집계도 정확히 일치
   확인. 실패 0건.
 
-Repository/Service 계층 중 임베딩만 아직 없음 — 마지막 단계.
+- **OpenAI 임베딩 파이프라인 — 전체 5,201건 완료** — 착수 전 비용부터 실측했다:
+  `chunks` 5,201건 전체를 tiktoken(`cl100k_base`)으로 세어 총 3,403,072 토큰을
+  확인하고, `text-embedding-3-small` 표준 단가($0.02/1M) 기준 예상 비용 $0.068이
+  크레딧 $5의 1.4%도 안 됨을 먼저 확인한 뒤 진행했다. Batch API(50% 할인)는
+  절감액이 3센트뿐이라 비동기 복잡도를 감수할 실익이 없다고 판단해 채택하지
+  않았다.
+
+  구현은 기존 `ChunkingService`/`IndexingService`와 같은 패턴(문서/청크 단위
+  독립 트랜잭션)을 따르되, 처리 단위가 Disclosure가 아니라 Chunk라는 점이
+  다르다. 새로 추가한 `ChunkRepository`로 `embedding IS NULL`인 청크를 여러
+  Disclosure에 걸쳐 한 번에 묶어(요청당 100개) `EmbeddingClient`/
+  `OpenAiEmbeddingClient`(`RestClient` 기반, 기존 DART 클라이언트들과 동일한
+  패턴)로 OpenAI에 보낸다. `EmbeddingService`는 sub-batch(100개)마다 독립
+  트랜잭션으로 저장하고, HTTP 호출은 트랜잭션 밖에서 실행해 DB 트랜잭션을 짧게
+  유지한다. `embedding IS NULL` 자체가 "대기" 표시라 별도 `EMBEDDED` 상태 없이도
+  재실행 시 중복 호출이 없다. `EmbeddingScheduler`는 비용이 드는 외부 API를
+  부르는 스케줄러라 다른 스케줄러와 달리 `matchIfMissing=false`로 설정해
+  안전장치를 이중으로 뒀다(운영 시엔 `enabled: false`로 유지).
+
+  설계에는 없었지만 구현 중 필요해서 추가한 것: OpenAI 응답은 sub-batch 합계
+  토큰만 주고 청크별 토큰 수는 안 줘서, `chunks.token_count`를 정확히 채우려면
+  로컬 토크나이저가 필요했다. `jtokkit`(Java, `cl100k_base` — 비용 추정 때 쓴
+  Python `tiktoken`과 동일 인코딩)을 추가해 API 호출 전에 청크별 정확한 토큰
+  수를 계산하고, 8,191 토큰(임베딩 입력 한도) 초과 청크를 API 호출 전에 걸러내는
+  방어선으로도 쓴다.
+
+  검증: ①10개 파일럿 — 벡터 저장(`vector_dims`=1536), `embedding_model`/
+  `token_count` 채워짐, round-trip 무결성(`embedding <=> embedding` = 0), 로그의
+  토큰/비용 출력, 재실행해도 중복 없음까지 확인 → ②전체 5,191건(남은 전부) —
+  실패 0건, `embedding IS NULL` 잔여 0건, `vector_dims` 불일치 0건.
+
+  **실측 결과가 특히 의미 있다**: 전체 5,201건의 실제 토큰 수가 사전 추정(Python
+  `tiktoken`) / 로컬 계산(Java `jtokkit`) / OpenAI 서버 응답(`usage.total_tokens`
+  합산) 세 가지 방법 모두에서 정확히 **3,403,072**로 일치했다. 실제 비용은
+  **$0.068**(예측과 동일) — 앞으로는 API를 호출하지 않고도 토큰 수/비용을
+  정확히 예측할 수 있다는 뜻이다.
+
+**하이브리드 검색의 재료가 모두 준비됐다** — ElasticSearch 색인(BM25 키워드
+검색)과 pgvector 임베딩(벡터 의미검색) 둘 다 5,201건 전체에 대해 완료됐다.
+남은 건 두 결과를 RRF로 융합하는 검색 엔진 자체뿐이다.
 
 ## 2. 현재 프로젝트 상태 요약
 
@@ -202,11 +241,12 @@ insight-stock/
 │   └── src/main/java/com/insightstock/insightstock/
 │       ├── InsightStockApplication.java
 │       ├── domain/        # Company, Disclosure, Chunk, DocumentStatus, ChunkType, ChunkSource, support/VectorType
-│       ├── repository/    # CompanyRepository, DisclosureRepository
+│       ├── repository/    # CompanyRepository, DisclosureRepository, ChunkRepository
 │       ├── dart/          # DartListClient, DartDocumentClient, XmlTextExtractor, DartApiException, dto/
 │       ├── collector/     # DisclosureCollectorService(+Scheduler), DocumentCollectorService(+Scheduler)
 │       ├── chunking/      # ChunkingService(+Scheduler)
-│       └── indexing/      # ChunkDocument, ChunkDocumentRepository, IndexingService(+Scheduler)
+│       ├── indexing/      # ChunkDocument, ChunkDocumentRepository, IndexingService(+Scheduler)
+│       └── embedding/     # EmbeddingClient/OpenAiEmbeddingClient, TokenCounter, EmbeddingService(+Scheduler), dto/
 │   └── src/main/resources/
 │       ├── application.yml
 │       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
@@ -219,10 +259,13 @@ insight-stock/
 `frontend/`는 아직 없음 (나중에 추가 예정). Controller도 아직 없음(프론트엔드 연동
 시점에 필요).
 
-### 현재 데이터 상태 (2026-07-22 기준, ES 색인 완료 후)
+### 현재 데이터 상태 (2026-07-22 기준, 임베딩 완료 후)
 
 - `companies`: 558건, `disclosures`: 1960건, `chunks`: 5,201건 — ElasticSearch
   `chunks` 인덱스에도 5,201건 색인 완료(Postgres/ES 건수 일치 확인)
+- `chunks.embedding`: 5,201건 전부 채워짐(`embedding IS NULL` 0건),
+  `vector_dims` 전부 1536, `embedding_model` 전부 `text-embedding-3-small`
+  1종. 총 토큰 3,403,072 / 실제 비용 $0.068(사전 추정과 정확히 일치)
 - `document_status` 분포: `PENDING` 1584 / `PARSED` 208 / `INDEXED` 147 /
   `NO_DOCUMENT` 16 / `FAILED` 5 (`FAILED` 5건은 전부 `감사보고서`류 — document
   API ZIP 안에 `{rcept_no}.xml`을 안 준 케이스, `XmlTextExtractor`와 무관)
@@ -253,8 +296,9 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 
 ## 3. 다음에 할 일
 
-list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSearch 색인까지
-완료. 하이브리드 검색(BM25+벡터)의 절반(BM25)이 이걸로 끝났고, 남은 건 임베딩뿐이다.
+list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSearch 색인,
+임베딩까지 완료. **하이브리드 검색(BM25+벡터)에 필요한 재료가 모두 준비됐고,
+남은 건 검색 엔진 자체뿐이다.**
 
 1. **[완료] 청크 폭증 문서 대응** — `SLIDING_WINDOW` 청크를 실제로 열어봐서 원인을
    두 가지로 분리하고 둘 다 해결했다(dart-findings.md 2-6, 2-7). CSS 오염 제거 +
@@ -266,32 +310,22 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    건수 일치 확인. Nori 사용자 사전(`보고서`/`신고서`/`설명서`/`특수관계인`/
    `감사인`/`이사회` 6개)까지 실측 검증 후 반영(dart-findings.md 2-8 — "보고서"가
    기본 사전으로는 깨지는 걸 코드 짜기 전에 `_analyze` API로 미리 발견한 사례).
-3. **[다음 세션] 임베딩** — OpenAI 크레딧 $5 충전 완료(2026-07-22). 단,
-   `.env`에 `OPENAI_API_KEY`는 아직 등록 안 함 — 다음 세션에서 키 발급/등록부터
-   확인할 것. 진행 순서:
-   1. **비용 추정을 먼저 한다** — `text-embedding-3-small` 단가 기준으로
-      `chunks` 전체 5,201건(+ 향후 늘어날 분량)의 예상 토큰 수/비용을 계산해서
-      사용자에게 먼저 보여주고 진행 여부를 확인받을 것. `chunks.token_count`
-      컬럼이 있지만 아직 채워진 적 없음 — 임베딩 전에 토큰 수 계산이 필요.
-   2. **배치 API 활용을 검토한다** — OpenAI embeddings API는 한 번의 호출에
-      여러 텍스트를 배열로 넘길 수 있어(단건 대비 저렴/빠름), `EmbeddingClient`
-      인터페이스를 설계할 때 이걸 살릴 수 있는 시그니처로 만들 것(예:
-      `List<float[]> embed(List<String> texts)`).
-   3. **구현은 기존 패턴 그대로** — `ChunkingService`가 임베딩 코드를 전혀
-      참조하지 않게 이미 분리해뒀으므로, 새 패키지(예: `embedding/`)에
-      `EmbeddingService`(+`EmbeddingScheduler`, 기존 서비스들과 동일하게
-      문서/청크 단위 독립 트랜잭션)와 `EmbeddingClient` 인터페이스를 추가하는
-      형태. **`chunks.embedding IS NULL`인 청크만 골라서 처리**해 이미 임베딩된
-      청크에 중복 호출이 나가지 않게 한다(재시도해도 안전한 멱등 구조).
-      `document_status`에 별도 `EMBEDDED` 상태는 두지 않고 `embedding IS NULL`
-      자체를 "대기" 표시로 쓴다. `chunks.embedding_model`에 사용한 모델명을
-      기록(모델 교체 시 재임베딩 대상 식별용).
-   4. **소량(10개)부터 검증** — 청킹/색인 때와 같은 방식으로, 전체 5,201건에
-      바로 돌리지 말고 10개만 먼저 임베딩해서 정상 저장/조회되는지 확인받은
-      다음에 확장할 것.
-
-   임베딩까지 끝나면 RRF(Reciprocal Rank Fusion)로 BM25(ES)와 벡터(pgvector)
-   검색 결과를 융합하는 단계가 남는다([docs/erd.md](./erd.md) 참고).
+3. **[완료] 임베딩** — `chunks` 5,201건 전부 `text-embedding-3-small`로 임베딩,
+   실패 0건. 착수 전 tiktoken으로 토큰 수(3,403,072개)를 실측해 예상 비용($0.068)이
+   $5 크레딧의 1.4%도 안 됨을 먼저 확인한 뒤 진행했고, Batch API는 절감액이
+   3센트뿐이라 채택하지 않았다. 실제 토큰 수가 사전 추정(Python tiktoken)/로컬
+   계산(Java jtokkit)/OpenAI 서버 응답 세 방법 모두에서 정확히 일치해, 앞으로는
+   API 호출 없이도 비용을 정확히 예측할 수 있음을 확인했다. 상세는 위 1절 참고.
+4. **[다음 세션] 하이브리드 검색 엔진** — RRF(Reciprocal Rank Fusion)로 BM25와
+   벡터 검색 결과를 융합하는 단계([docs/erd.md](./erd.md) 참고). 진행 순서(안):
+   1. ElasticSearch BM25 검색(`ChunkDocumentRepository` 또는
+      `ElasticsearchOperations`+`NativeQuery`)과 pgvector 코사인 유사도 검색
+      (`chunks.embedding <=> :queryVector`, HNSW 인덱스 활용)을 같은 질의에 대해
+      동시에 수행.
+   2. 두 결과를 RRF로 순위 융합 — 문서/청크 단위가 이미 일치하므로(양쪽 다
+      `chunk.id` 기준) 융합 로직 자체는 단순한 랭크 합산으로 시작 가능.
+   3. 융합된 순위에서 Top-K 청크를 선별해 반환(추후 RAG 답변 생성 단계의 입력이
+      될 자리).
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
@@ -374,17 +408,13 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
 
 ### 참고할 추가 컨텍스트
 
-- `.env`에 `DART_API_KEY`, `POSTGRES_USER`, `POSTGRES_PASSWORD`가 이미 채워져 있어야
-  백엔드가 뜬다 (레포에는 `.env.example`만 있음, `.env`는 로컬에만 존재).
-  **OpenAI 크레딧은 $5 충전 완료(2026-07-22)했지만 `OPENAI_API_KEY`는 아직
-  `.env`에 등록 안 함** — 다음 세션 시작 시 키 발급/등록부터 확인할 것.
-- pgvector 매핑(`Chunk.embedding`)은 이미 검증 완료된 상태이니, 임베딩 관련 작업을
-  다시 처음부터 조사할 필요 없음 — `VectorType`을 그대로 재사용.
-- list/document/chunking/indexing 파이프라인(`repository/`, `dart/`, `collector/`,
-  `chunking/`, `indexing/` 패키지)은 이미 완성되어 백엔드를 띄워두면 계속 돌아간다.
-  다음 작업(임베딩)은 이 위에 새 서비스(예: `embedding/` 패키지의
-  `EmbeddingService`)를 추가하는 형태가 될 것 — `ChunkRepository`는 아직 없음
-  (Disclosure가 cascade로 chunks를 관리하는 애그리게이트 루트라 지금까지는
-  필요 없었음), 임베딩 배치가 `chunks WHERE embedding IS NULL`을 직접 조회하려면
-  추가해야 함. 임베딩 착수 순서(비용 추정 → 배치 API 검토 → 구현 → 10개 테스트 →
-  확장)는 3절 3번 참고.
+- `.env`에 `DART_API_KEY`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `OPENAI_API_KEY`가
+  모두 채워져 있어야 백엔드가 뜬다(레포에는 `.env.example`만 있음, `.env`는
+  로컬에만 존재).
+- pgvector 매핑(`Chunk.embedding`)과 임베딩 파이프라인(`embedding/` 패키지) 모두
+  검증 완료 — 임베딩 관련 작업을 다시 처음부터 조사할 필요 없음.
+- list/document/chunking/indexing/embedding 파이프라인(`repository/`, `dart/`,
+  `collector/`, `chunking/`, `indexing/`, `embedding/` 패키지)이 모두 완성되어
+  백엔드를 띄워두면 계속 돌아간다. `embedding.collector.enabled`는 비용이 드는
+  외부 API를 부르므로 기본 `false` — 다음 작업(하이브리드 검색 엔진)은 새
+  Controller/Service를 추가하는 형태가 될 것(3절 4번 참고).
