@@ -42,6 +42,10 @@ dependencies {
 tasks.named('test') {
 	useJUnitPlatform()
 	environment "SPRINGDOTENV_DIRECTORY", ".."
+	// ManualIT류 검증 테스트는 assert가 아니라 println 결과를 사람이 읽는 용도라 필요.
+	testLogging {
+		showStandardStreams = true
+	}
 }
 
 tasks.named('bootRun') {
