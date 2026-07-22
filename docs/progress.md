@@ -1,6 +1,6 @@
 # 진행 상황 (Progress)
 
-마지막 업데이트: 2026-07-22
+마지막 업데이트: 2026-07-23
 
 다음 세션 시작 시 이 문서부터 읽으면 지금까지 뭘 했고 다음에 뭘 할지 바로 파악할 수 있다.
 
@@ -357,6 +357,21 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
 
    다음 단계는 RAG 답변 생성(LLM에 Top-K 청크를 근거로 넘겨 출처 명시 답변 생성)과
    이를 노출할 Controller/API 계층.
+5. **[다음 세션] RAG 답변 생성** — `HybridSearchService`의 Top-K 청크를 컨텍스트로
+   LLM에 주입해 출처 명시 답변을 생성하는 단계(CLAUDE.md의 핵심 목표 - 금융
+   도메인 환각 제어). 진행 순서(안):
+   1. `HybridSearchService.search()` 결과(`RankedChunk` 리스트)를 프롬프트
+      컨텍스트로 조립.
+   2. **프롬프트 설계** — 컨텍스트 밖 정보를 지어내지 않도록 강제하는 지시문,
+      컨텍스트 안에 답이 없으면 "모른다"고 답하게 하는 지시문을 명시적으로 넣을 것.
+   3. **출처 표시 로직** — `RankedChunk`의 공시(`rcept_no`)를 DART 원문 링크로
+      변환해 답변과 같이 노출.
+   4. **모델 선택 및 비용 추정을 먼저 한다** — 남은 예산 $4.93. 답변 생성(채팅
+      완성)은 임베딩보다 토큰당 단가가 훨씬 비싸고 입력+출력 모두 과금되므로,
+      임베딩 때와 같은 원칙(비용 실측 → 사용자 승인 → 진행)을 그대로 따를 것 -
+      절대 먼저 대량으로 돌리지 말 것.
+   5. **소량 테스트 후 확인받고 진행** — 질의 몇 개로 먼저 답변을 생성해보고
+      품질/출처 표시가 의도대로 나오는지 확인받은 다음에 확장.
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
@@ -456,5 +471,12 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
 - list/document/chunking/indexing/embedding 파이프라인(`repository/`, `dart/`,
   `collector/`, `chunking/`, `indexing/`, `embedding/` 패키지)이 모두 완성되어
   백엔드를 띄워두면 계속 돌아간다. `embedding.collector.enabled`는 비용이 드는
-  외부 API를 부르므로 기본 `false` — 다음 작업(하이브리드 검색 엔진)은 새
-  Controller/Service를 추가하는 형태가 될 것(3절 4번 참고).
+  외부 API를 부르므로 기본 `false`.
+- 하이브리드 검색 엔진(`search/` 패키지 - `KeywordSearchService`/
+  `VectorSearchService`/`RrfFuser`/`HybridSearchService`)도 완성되어 검증까지
+  끝났음 - 다시 조사할 필요 없이 `HybridSearchService.search(query, topK)`를
+  그대로 갖다 쓰면 됨. `HybridSearchManualIT`(수동 검증용)에 실제 질의 예시와
+  결과 출력 포맷이 남아있으니 참고 가능.
+- **다음 작업은 RAG 답변 생성**(3절 5번 참고) - OpenAI 크레딧 잔액 $4.93 남음.
+  답변 생성은 임베딩보다 비싸므로 비용 추정 → 승인 → 소량 테스트 순서를 반드시
+  지킬 것(임베딩 때와 동일한 원칙, 3절 3번 참고).
