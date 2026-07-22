@@ -65,9 +65,48 @@
   참조하지 않는다(청킹과 임베딩을 처음부터 별개 서비스로 분리). 실제 데이터(20건,
   1,337개 청크)로 검증: `SECTION` 105개 / `SLIDING_WINDOW` 1,221개 / `WHOLE_DOCUMENT`
   11개. 구현 중 `Disclosure.chunks`가 지연 로딩 컬렉션인데 세션 밖에서 접근해
-  `LazyInitializationException`이 나는 버그가 있었고, `chunkPending()`에
-  `@Transactional`을 추가해 해결(배치 전체를 하나의 트랜잭션으로 묶되, 문서별
-  실패는 내부 try/catch로 흡수해 다른 문서 처리에 영향 없음).
+  `LazyInitializationException`이 나는 버그가 있었다 — 처음엔 `chunkPending()`
+  전체를 `@Transactional`로 묶어 해결했는데, 이 방식은 나중에 재청킹 과정에서 더
+  심각한 문제를 드러냈다(바로 아래 항목).
+
+- **청크 폭증 원인 분석 + CSS 오염 제거(1단계) + 재청킹 버그 2건 수정** —
+  `SLIDING_WINDOW` 청크(786,390자 문서, 1,210개 청크)를 실제로 열어봐서 원인을
+  정량 확인했다: 청크의 72.1%(872/1,210)가 정규식 폴백에서 표가 압축되지 않고
+  셀이 한 줄씩 풀린 것("의미 있는 문자 비율" 필터로는 안 걸러짐 — 실제 회사명/
+  숫자라 필터를 통과함). 여기서 별개의 문제를 하나 더 발견했다: 일부 "자율공시"
+  유형(기업설명회 IR개최, 최대주주등소유주식변동신고서 등 여러 report_nm에 걸침)은
+  DART4 스키마가 아니라 `<html><head><STYLE>...</STYLE></head>` 형태의 HTML
+  보일러플레이트를 쓰는데, 정규식 폴백이 이 CSS 텍스트를 그대로 청크에 남겼다
+  (상세: dart-findings.md 2-6). 기존 `PARSED`/`CHUNKED` 59건 중 18건(30.5%)이
+  영향받고 있었다.
+
+  대응: `XmlTextExtractor.regexStrip()`이 일반 태그 제거 전에 `head`/`style`/
+  `script` 블록을 내용째로 먼저 잘라내도록 수정. 영향받은 18건을 `PENDING`으로
+  되돌려 재정제 → CSS 흔적 0건 확인(예: 20260721800091은 2,380자→1,235자로 축소,
+  내용은 진짜 공시 텍스트만 남음).
+
+  재청킹 과정에서 두 가지 버그를 추가로 발견/수정했다:
+  1. **유니크 제약 위반** — `Chunk.id`가 `GenerationType.IDENTITY`라 새 청크의
+     INSERT가 즉시 실행되는데, `orphanRemoval`로 인한 기존 청크 DELETE는 flush
+     시점까지 지연된다. 재청킹 시 `chunk_index`를 그대로 재사용하면 DELETE보다
+     INSERT가 먼저 나가 `uk_chunks_disclosure_chunk_index` 제약을 위반했다 —
+     `disclosure.getChunks().clear()` 직후 `saveAndFlush()`로 DELETE를 먼저
+     확정시켜 해결.
+  2. **배치 전체 트랜잭션의 연쇄 실패** — 위 버그로 한 문서가 실패하자 그 문서
+     하나만 실패하는 게 아니라 같은 배치의 나머지 19건도 전부
+     `"current transaction is aborted"`로 실패했다. `chunkPending()` 전체를
+     하나의 `@Transactional`로 묶어서, 한 문서의 SQL 에러가 Postgres 커넥션
+     자체를 오염시켜 이후 모든 문서가 연쇄적으로 실패한 것 — try/catch로 예외를
+     잡아도 트랜잭션이 이미 오염된 상태라 소용없었다. `TransactionTemplate`으로
+     문서 하나당 독립된 트랜잭션을 쓰도록 재구성해 해결(각 문서는 자신만의
+     트랜잭션에서 다시 조회 → 청킹 → 저장; 실패해도 그 문서의 트랜잭션만
+     롤백되고 나머지에는 영향 없음).
+
+  수정 후 18건 중 8건 재청킹 성공 확인(나머지 10건은 배치 크기 20건 제한으로
+  이번 실행에 안 걸렸을 뿐 — 다음 청킹 실행 때 자연히 처리됨, 버그 아님).
+  `chunk_index` 중복 0건, CSS 잔존 0건까지 psql로 확인. 표 미압축(2단계)은
+  아직 손대지 않아 `ChunkingScheduler`는 계속 비활성화(`chunking.collector.
+  enabled: false`) 상태로 둠.
 
 Repository/Service 계층 중 임베딩, ElasticSearch 색인은 아직 없음 — 다음 단계.
 
@@ -117,17 +156,17 @@ insight-stock/
 `frontend/`는 아직 없음 (나중에 추가 예정). Controller도 아직 없음(프론트엔드 연동
 시점에 필요).
 
-### 현재 데이터 상태 (2026-07-22 기준)
+### 현재 데이터 상태 (2026-07-22 기준, CSS 오염 제거 후)
 
-- `companies`: 357건, `disclosures`: 1480건, `chunks`: 1,337건
-- `document_status` 분포: `PENDING` 1405 / `PARSED` 39 / `CHUNKED` 20 / `NO_DOCUMENT` 15 / `FAILED` 1
+- `companies`: 555건, `disclosures`: 1918건, `chunks`: 1,401건
+- `document_status` 분포: `PENDING` 1781 / `PARSED` 86 / `CHUNKED` 35 / `NO_DOCUMENT` 15 / `FAILED` 1
   (`FAILED` 1건은 document API가 ZIP 안에 `{rcept_no}.xml`을 안 준 개별 케이스 —
   재시도 로직은 아직 없음, 필요하면 나중에 추가)
-- `chunks.chunk_source` 분포: `SLIDING_WINDOW` 1,221 / `SECTION` 105 / `WHOLE_DOCUMENT` 11
-  (`SLIDING_WINDOW`가 큰 건 문서 하나(투자설명서, 정규식 폴백 경로, 786,390자)가
-  1,210개 청크를 만들어낸 영향 — dart-findings.md 2-5 참고)
-- 다음 세션 시작 시 백엔드를 띄우면 list/document/chunking 스케줄러가 모두 즉시 1회
-  더 실행되므로, 켜두는 시간에 비례해 `PARSED`→`CHUNKED` 비율이 계속 올라간다.
+- `chunks.chunk_source` 분포: `SLIDING_WINDOW` 1,241 / `SECTION` 141 / `WHOLE_DOCUMENT` 19
+- `ChunkingScheduler`는 `chunking.collector.enabled: false`로 꺼둔 상태 —
+  표 미압축 문제(아래 3절 1번)를 먼저 처리할 때까지 `PARSED`가 자동으로
+  `CHUNKED`로 전이되지 않는다. list/document 수집 스케줄러는 계속 켜져 있어
+  백엔드를 띄워두면 `PENDING`/`PARSED` 비율은 계속 올라간다.
 
 ### 실행 방법 요약
 
@@ -150,18 +189,20 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 
 list API 수집, document 원문 수집, 청킹까지 완료. 순서는 아래 우선순위대로.
 
-1. **[우선] 청크 폭증 문서 대응** — 정규식 폴백을 탄 문서는 표가 압축되지 않고
-   셀이 한 줄씩 풀려서 텍스트가 부풀어난다(dart-findings.md 2-5, 실측:
-   786,390자 문서 하나가 1,210개 청크). 임베딩 비용이 청크 개수에 비례하므로,
-   **임베딩을 붙이기 전에 반드시 처리**해야 한다. 검토할 옵션:
-   - 정규식 폴백에서도 표를 압축 (예: 연속된 짧은 줄들을 휴리스틱으로 묶어
-     `"셀1 | 셀2"` 형태로 재구성 — 원본 구조 정보가 없어 완벽할 수 없음)
-   - 문서당 청크 수 상한 설정 (초과 시 뒷부분을 버릴지, 다른 방식으로 압축할지
-     결정 필요)
-   - 저품질 청크 필터(`chunking.empty-content-filter`)를 강화해 정보량 낮은
-     청크를 더 적극적으로 제거
-   - 세 옵션을 조합할 수도 있음 — 착수 전에 `SLIDING_WINDOW` 소스 청크들을
-     몇 개 더 열어보고 실제로 어떤 게 부풀어나는지 확인부터 할 것
+1. **[우선] 청크 폭증 문서 대응** — `SLIDING_WINDOW` 청크를 실제로 열어봐서 원인을
+   두 가지로 분리했다(dart-findings.md 2-5, 2-6).
+   - **[완료] CSS 오염 제거** — 일부 "자율공시"가 HTML 보일러플레이트를 써서 CSS가
+     그대로 청크에 남던 문제. `XmlTextExtractor`에 head/style/script 블록 제거
+     추가, 영향받은 18건 재정제 완료(위 1절 참고).
+   - **[남음] 표 미압축** — 정규식 폴백 문서는 표가 압축되지 않고 셀이 한 줄씩
+     풀려서 텍스트가 부풀어난다(실측: 786,390자 문서 하나가 1,210개 청크 중
+     872개(72.1%)가 이 패턴). 저품질 필터로는 안 걸러짐(실제 회사명/숫자라
+     "의미 있는 문자 비율"이 높게 나옴 — 데이터로 확인됨). 임베딩 비용이 청크
+     개수에 비례하므로 **임베딩을 붙이기 전에 반드시 처리**해야 한다. 검토할 옵션:
+     - 정규식 폴백에서도 표를 압축(`DOM 경로의 appendTableRows()`와 일관되게)
+     - 문서당 청크 수 상한
+     - 세 옵션을 조합할 수도 있음. 착수 전에 폴백 문서가 XML이 깨진 상태에서
+       표 구조를 어디까지 안전하게 복원할 수 있는지 먼저 판단할 것
 2. **[그다음] 임베딩** — OpenAI 크레딧 충전 후 착수. `chunks.embedding IS NULL`인
    청크를 배치로 찾아 `text-embedding-3-small`(1536차원)로 임베딩.
    `ChunkingService`가 임베딩 코드를 전혀 참조하지 않게 분리해뒀으므로, 별도
@@ -184,8 +225,36 @@ list API 수집, document 원문 수집, 청킹까지 완료. 순서는 아래 �
   같은 관대한 파서 도입)는 아직 고치지 않았다 — 검색 품질을 측정해 `SLIDING_WINDOW`
   경로 성능이 눈에 띄게 나쁘면 그때 재검토. 상세: dart-findings.md 2-5.
 - **`SLIDING_WINDOW` 경로가 극단적으로 큰 문서를 만들 수 있음** — 786,390자
-  문서 하나가 청크 1,210개. 3절 1번(우선순위)에서 착수 예정이라 여기서는
-  중복 설명하지 않음.
+  문서 하나가 청크 1,210개, 그중 72.1%가 표 미압축 패턴. 3절 1번(우선순위)에서
+  착수 예정이라 여기서는 중복 설명하지 않음.
+- **JPA: IDENTITY 생성 전략 + orphanRemoval 컬렉션을 재사용할 때는 clear() 직후
+  flush 필요** — `Chunk.id`가 `GenerationType.IDENTITY`라 새 엔티티 INSERT가
+  즉시 실행되는데, `orphanRemoval=true`로 인한 기존 엔티티 DELETE는 flush
+  시점까지 지연된다. `collection.clear()` 후 바로 새 엔티티를 채워 넣고
+  저장하면 (같은 자연키를 재사용하는 경우) DELETE보다 INSERT가 먼저 나가
+  유니크 제약을 위반할 수 있다 — `clear()` 직후 `saveAndFlush()`로 DELETE를
+  먼저 확정시켜야 한다. `ChunkingService`의 재청킹 흐름에서 실제로 겪음(위 1절
+  참고). 나중에 다른 곳에서도 "cascade+orphanRemoval로 컬렉션을 통째로
+  교체"하는 패턴을 쓸 때 같은 문제가 재현될 수 있으니 기억해둘 것.
+- **배치 처리에서 트랜잭션 범위를 문서 하나보다 크게 잡지 말 것** — 여러 건을
+  순회하며 처리하는 배치를 하나의 `@Transactional`로 묶으면, 한 건의 SQL 에러가
+  (Postgres는 트랜잭션 안에서 에러가 나면 ROLLBACK 전까지 이후 모든 명령을
+  거부한다) 같은 배치의 나머지 건도 전부 연쇄 실패시킨다 — try/catch로 예외를
+  잡아도 트랜잭션 자체가 이미 오염돼 있어 소용없다. `ChunkingService`가
+  `TransactionTemplate`으로 문서 하나당 독립 트랜잭션을 쓰도록 고친 사례 참고.
+  `DocumentCollectorService`/`DisclosureCollectorService`도 같은 구조인지
+  점검 필요 → 점검 완료: 둘 다 클래스/메서드에 `@Transactional`이 없어
+  (`grep` 확인) 이 버그와 동일한 "커넥션 자체가 오염되는" 문제는 없다.
+  `DocumentCollectorService`는 문서 단위로 개별 `save()` + 문서별 try/catch까지
+  갖춰서 안전하다. 다만 `DisclosureCollectorService.collect()`는 페이지 순회
+  루프 안에 try/catch가 없어서, 한 건(`saveIfNew()`)이 예외를 던지면 그 예외가
+  페이지 루프 전체를 빠져나가 같은 실행에서 이후 항목들이 처리되지 않는다 —
+  `@Transactional`이 없으니 이미 저장된 항목이 롤백되지는 않고, `rcept_no` 중복
+  체크 덕분에 다음 10분 주기 실행 때 자연히 재시도되긴 하지만, 문서 단위
+  try/catch가 없다는 점은 `DocumentCollectorService`/`ChunkingService`와
+  다르다 — 언젠가 견고하게 만들려면 `saveIfNew()` 호출부에 try/catch 추가를
+  검토. 배치 서비스를 새로 만들 때는 이 패턴(문서 단위 개별 트랜잭션 + 문서 단위
+  try/catch)을 따를 것.
 - **스케줄러 10분 간격이 개발 중엔 잦게 느껴질 수 있음** — list/document/chunking
   스케줄러 모두 `@Scheduled(fixedDelay)`라 앱을 띄울 때마다 즉시 1회 실행된다.
   개발 프로파일에서 주기를 늘리거나, 로컬 개발 시 스케줄러를 끄고 수동 트리거로

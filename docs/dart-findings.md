@@ -194,6 +194,58 @@ DOM 파싱이 6/20(30%)에서 실패하고 정규식 폴백(`regexStrip`, `<[^>]
 실제로 측정해서 이 경로(`chunk_source = SLIDING_WINDOW`)의 성능이 눈에 띄게
 나쁘면, 그때 `lxml recover` 같은 관대한 파서 도입을 재검토한다.
 
+### 2-6. 일부 "자율공시"는 DART4 스키마가 아니라 HTML 보일러플레이트 — CSS가 그대로 청크에 남음
+
+지금까지 문서 전체가 DART4 XSD(`<DOCUMENT>`/`TITLE`/`TABLE`) 스키마라고 가정했는데,
+2026-07-22 SLIDING_WINDOW 청크를 직접 열어보다가 예외를 발견했다. 원본 XML을 다시
+받아보니 일부 "자율공시" 유형(`report_nm` 예: 기업설명회(IR)개최(안내공시), 유상증자
+또는 주식관련사채등의청약결과(자율공시), 최대주주등소유주식변동신고서, 단일판매·공급계약체결
+등 — 특정 report_nm 하나가 아니라 여러 유형에 걸쳐 있음)은 완전히 다른 구조다:
+
+```html
+<html>
+ <head>
+  <meta content="gdi" http-equiv="X-UA-TextLayoutMetrics">
+  <meta content="text/html; charset=euc-kr" http-equiv="Content-Type">
+  <STYLE>
+.xforms * { font-family: 돋움체;}
+.xforms table { font-size: 10px; ... }
+  </STYLE>
+  <title>...</title>
+ </head>
+ <body>
+  <div class="xforms"> ... <table><tbody><tr><td>...</td></tr></tbody></table> ...
+ </body>
+</html>
+```
+
+DART4 스키마의 대문자 `TITLE`/`TABLE`/`TR`/`TD`와 달리 소문자 HTML 태그(`table`,
+`tr`, `td`)를 쓰고, `<meta>`처럼 자체 종료 안 되는 HTML void element가 섞여 있어
+엄격 XML 파싱이 항상 실패한다(2-3의 "meta 태그 미종료" 에러가 바로 이 유형).
+문제는 그 다음: 정규식 폴백(`<[^>]+>` 제거)은 태그만 지우지 `<STYLE>...</STYLE>`
+**안의 CSS 텍스트**는 태그가 아니라서 그대로 남는다. 실측(`rcept_no=20260721800091`,
+2,380자): 청크 4개 중 2개(약 67%)가 `color: #194866; text-decoration: none;` 같은
+순수 CSS였다 — 진짜 공시 내용이 아니라 완전한 노이즈.
+
+기존에 저장된 데이터 전체를 조회해보니 이 유형이 드문 예외가 아니었다: `PARSED`/
+`CHUNKED` 59건 중 **18건(30.5%)**의 `raw_content`에 CSS 흔적(`.xforms`, `font-size`,
+`padding` 등)이 남아 있었다.
+
+**대응**: `XmlTextExtractor.regexStrip()`이 일반 태그 제거 전에 `<head>`/`<style>`/
+`<script>` 블록을 내용째로 먼저 잘라내도록 수정(대소문자 무관, 백레퍼런스로 여는/닫는
+태그 이름이 일치할 때만 매치). 18건 재정제 후 CSS 흔적 0건으로 확인. HTML 주석
+(`<!--...-->`)은 이미 기존 `<[^>]+>` 규칙으로 잘 지워지고 있어 별도 처리 불필요함을
+확인(내용에 `>`가 없는 한 주석 전체가 하나의 "태그"처럼 매치되기 때문).
+
+**참고(현재는 영향 없음, 나중에 파서를 관대하게 바꾸면 재검토)**: 이 HTML 유형은
+`TABLE`/`TITLE`이 아니라 소문자 `table`/`title`을 쓴다. `XmlTextExtractor.walk()`의
+`TITLE`/`TABLE` 분기와 `appendTableRows()`의 `getElementsByTagName("TR")`는 지금
+전부 대소문자 무관(`equalsIgnoreCase`) 또는 그렇지 않은 조합이 섞여 있는데, 이 유형은
+애초에 DOM 파싱까지 도달하지 못해(항상 폴백) 지금은 문제가 되지 않는다. 나중에
+`lxml recover`처럼 더 관대한 파서로 바꿔서 이 유형도 DOM 경로를 타게 되면, HTML의
+`<title>`(페이지 제목, 섹션 아님)이 `[[SECTION]]` 마커로 잘못 잡히지 않는지 다시
+확인해야 한다.
+
 ## 3. 청킹 전략 제안 (RAG용)
 
 1. **문서 유형(`report_nm`)별로 처리 전략을 분기한다.**
