@@ -327,6 +327,47 @@
   들어 이번엔 테스트하지 않고 `/search`로만 검증(스케줄러는 임베딩만
   비활성 확인 후 진행 - 기존 원칙 그대로).
 
+- **1단계 화면 구현 — 메인 페이지(질문→답변→출처)** — `app/page.tsx`를 실제
+  화면으로 교체하고 `components/`(`QuestionForm`/`AnswerText`/`SourceCard`/
+  `ResultPanel`)와 `lib/citations.ts`를 추가했다. 요구사항이었던 로딩
+  스켈레톤/에러 분기(`errorCode` → 사용자 메시지 매핑)/"찾지 못했습니다"
+  구분 표시/모바일 반응형(`sm:` 브레이크포인트)을 모두 구현.
+
+  **인용 번호 재매핑**: 백엔드 `CitationParser`는 답변에 처음 등장한 순서로
+  중복 제거한 인용 번호만 `sources` 배열에 담는다(예: 답변이 `[3][4]`를
+  인용하면 `sources`는 2건이고 `sources[0]`이 `[3]`에 대응) - 프론트가 원본
+  번호를 그대로 쓰면 카드 번호와 텍스트 번호가 어긋난다. `lib/citations.ts`의
+  `splitAnswerByCitations()`가 백엔드와 동일한 규칙(첫 등장 순서 기준
+  재번호)으로 답변 텍스트를 파싱해, 인용 배지를 클릭하면 해당 출처 카드로
+  스크롤 이동하도록 구현했다.
+
+  **화면 작업은 목업으로, 검증은 실제 API로 최소 횟수만** — `/answers`가
+  호출당 약 $0.0015라 화면을 다듬는 동안은 `lib/mockAnswers.ts`(찾음/
+  못찾음/에러 3가지 케이스, 1.5초 인위적 지연)로 작업했다. 처음엔 예시
+  질문 칩 3개를 아무 질문이나 넣었는데, 사용자가 "삼성전자 유상증자"
+  칩을 눌렀을 때 목업이 조건에 안 걸려 무관한 한국투자증권 ELS 답변이
+  그대로 나오는 걸 발견 - 실제 DB(7/20~21 수집분 147건)에 그 내용이 없을
+  가능성이 높아 실제 API에서도 재현될 문제였다. 대응: ①`GET
+  /api/v1/search`(비용 없음)로 DB에 실제로 답이 있는 질문을 먼저 찾고
+  (`disclosures`를 `report_nm`/`corp_name`으로 훑어 후보를 고른 뒤 검색
+  결과 순도를 확인 - "파라택시스코리아의 합병 결정 내용은?"은 topK=10
+  중 10/10이 그 회사 자신의 공시, "한국투자증권 ELS" 질문은 기존
+  `AnswerServiceManualIT`로 이미 실 LLM 검증까지 끝난 질문이라 재사용),
+  ②목업을 예시 칩 질문 3개에 대한 정확 문자열 매칭으로 바꿔 매칭 안 되는
+  질문은 항상 "찾지 못했습니다"를 반환하게 해 무관한 답이 나올 여지를
+  없앴다("테슬라 자율주행 현황은?"을 세 번째 칩으로 추가해 환각 제어를
+  클릭 한 번으로 시연 가능하게 함), ③"찾지 못했습니다" 화면에 "국내
+  DART 공시 기반이라 해외 기업/수집 범위 밖 정보는 답할 수 없다"는 안내
+  문구를 추가해 왜 못 찾았는지 설명.
+
+  마지막으로 `MOCK_MODE`를 끄고 실제 `POST /api/v1/answers`를 예시 칩
+  2건(ELS/합병)에 대해 딱 2회만 호출해 검증했다 - 둘 다 정확하고 인용
+  번호-출처 매핑이 일치하는 답변을 확인했고, `lib/mockAnswers.ts`는
+  삭제했다. 부수 발견: 합병 질문 답변이 인용한 4개 출처 중 2쌍이 같은
+  공시·같은 섹션 제목(다른 청크)이라 카드가 시각적으로 거의 동일하게
+  두 번 나온다 - 틀린 데이터는 아니고(실제로 다른 청크를 인용) 백엔드
+  계약대로 정확한 동작이라 이번엔 그대로 두기로 함(사용자 확인 완료).
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
@@ -374,8 +415,10 @@ insight-stock/
 │       ├── prompts/rag-system-prompt.txt  # RAG system prompt (코드와 분리, 튜닝 시 재컴파일 불필요)
 │       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql
 ├── frontend/               # Next.js 16(App Router, TypeScript, Tailwind CSS)
-│   ├── app/                # search-test/(연결 확인용 임시 페이지, 디자인 없음)
-│   ├── lib/                # api.ts(search()/askAnswer()/ApiError), types.ts(백엔드 DTO와 1:1)
+│   ├── app/                # page.tsx(메인 화면), search-test/(연결 확인용 임시 페이지)
+│   ├── components/         # QuestionForm, AnswerText, SourceCard, ResultPanel
+│   ├── lib/                # api.ts(search()/askAnswer()/ApiError), types.ts(백엔드 DTO와 1:1),
+│   │                       # citations.ts(인용 번호 재매핑)
 │   ├── .env.local          # NEXT_PUBLIC_API_BASE_URL (git 제외)
 │   └── .env.local.example  # 커밋 대상 (frontend/.gitignore에 !.env*.example 예외 추가함)
 ├── tests/exploration/     # DART API 탐색용 파이썬 스크립트 (참고용, 자동화 테스트 아님)
@@ -545,18 +588,15 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    `lib/types.ts`로 백엔드 API 연결 기반을 마련, `/search` 실 호출과 CORS를
    브라우저에서 직접 확인했다. 상세는 위 1절 마지막 항목 참고. 화면 디자인은
    아직 없음(임시 검증 페이지 `app/search-test`만 존재).
-8. **[다음 세션] 1단계 화면 구현** — 진짜 사용자 화면을 만드는 단계.
-   - **메인 페이지**: 질문 입력 → `POST /api/v1/answers` 호출 → 답변 본문 +
-     출처(DART 링크) 표시.
-   - **"찾지 못했습니다" 케이스**: `sources`가 빈 배열일 때 일반 답변과
-     구분되는 표시(예: 안내 문구/아이콘) - 환각 없이 정직하게 모른다고
-     답하는 것 자체가 이 프로젝트의 핵심 가치이므로, 이걸 애매하게 보여주면
-     그 가치가 묻힘.
-   - **로딩 상태**: `/answers`는 실측 처리 시간이 약 1.9초(2절 "API 명세"
-     참고)라 로딩 인디케이터가 꼭 필요 - 스피너 없이 버튼만 비활성화하면
-     사용자가 멈춘 줄 오해하기 쉬움.
-   - **모바일 반응형**: Tailwind 기본 브레이크포인트로 시작.
-   - `/search`(RRF 순위 노출) 화면은 위 항목들 다음 우선순위로 논의.
+8. **[완료] 1단계 화면 구현** — `app/page.tsx` + `components/`(`QuestionForm`/
+   `AnswerText`/`SourceCard`/`ResultPanel`)로 메인 화면(질문→답변→출처)을
+   구현했다. 로딩 스켈레톤, `errorCode`별 에러 메시지, "찾지 못했습니다"
+   구분 표시(+ 안내 문구), 인용 번호 클릭 시 출처 카드로 스크롤, 모바일
+   반응형까지 포함. 실제 DB에서 답이 확실히 나오는 질문 2개를 `GET
+   /api/v1/search`(비용 없음)로 검증해 예시 칩으로 채택하고, 실제
+   `POST /api/v1/answers`로 딱 2회만 최종 확인했다. 상세는 위 1절 마지막
+   항목 참고.
+   - `/search`(RRF 순위 노출) 화면은 다음 우선순위로 논의 예정(미확정).
      인증(JWT)은 계속 MVP 범위 밖.
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
@@ -696,10 +736,11 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
 - Next.js 프론트엔드 셋업(`frontend/` - Next.js 16/TypeScript/Tailwind,
   `lib/api.ts`/`lib/types.ts`)도 완성되어 백엔드 API 연결까지 브라우저에서
   직접 검증했음 - 다시 조사할 필요 없이 `lib/api.ts`의 `search()`/
-  `askAnswer()`를 그대로 갖다 쓰면 됨. 아직 화면 디자인은 없음(`app/
-  search-test`는 연결 확인용 임시 페이지, 다음 단계에서 실제 화면으로 교체).
-- **다음 작업은 1단계 화면 구현**(3절 8번 참고) - 메인 페이지(질문→답변→
-  출처), "찾지 못했습니다" 케이스 표시, 로딩 상태(`/answers` 약 1.9초),
-  모바일 반응형 순서로 진행. OpenAI 크레딧 잔액은 이번 세션 검증 비용을
-  반영해도 여전히 $4.9 이상 유효(오늘은 `/search`로만 검증해 추가 비용
-  거의 없음).
+  `askAnswer()`를 그대로 갖다 쓰면 됨.
+- **1단계 화면(메인 페이지)도 완성됨**(3절 8번 참고) - `app/page.tsx` +
+  `components/`로 질문→답변→출처 화면이 실제 API(`askAnswer()`)에 연결돼
+  있고, 예시 질문 칩 2개는 실 DB 기준으로 답이 확실히 나오는 질문으로
+  검증돼 있음. `app/search-test`는 아직 연결 확인용 임시 페이지로 남아있음
+  (다음에 `/search` 화면을 만들면 대체될 후보).
+- **다음 작업은 미확정** - `/search`(RRF 순위 노출) 화면 또는 인증(JWT) 중
+  다음 세션 시작 시 사용자와 논의해서 정할 것.
