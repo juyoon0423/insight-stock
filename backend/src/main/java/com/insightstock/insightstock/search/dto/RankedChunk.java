@@ -9,6 +9,7 @@ public record RankedChunk(
         double rrfScore,
         Integer keywordRank,
         Integer vectorRank,
+        String rceptNo,
         String corpName,
         String reportNm,
         String sectionTitle,

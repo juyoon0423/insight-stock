@@ -78,3 +78,14 @@ hybrid-search:
   top-k: 10
   # RRF 상수(Cormack et al., 2009 권장값 - 순위 차이의 영향을 완만하게 만듦).
   rrf-k: 60
+
+rag:
+  chat:
+    api:
+      base-url: https://api.openai.com/v1
+      key: ${OPENAI_API_KEY}
+    # 비용 대비 검증에 충분한 품질부터 시작 - 품질 부족 확인되면 상위 모델로 교체
+    # (질문당 예상 비용 ~$0.0015, 다른 모델로 바꿔도 실질적 예산 제약은 없음).
+    model: gpt-4o-mini
+    # 사실 근거 답변이 목적이라 창의성보다 일관성이 중요 - 낮게 고정.
+    temperature: 0.0

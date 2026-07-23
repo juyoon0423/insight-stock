@@ -80,6 +80,7 @@ public class HybridSearchService {
                 rrfScore.score(),
                 rrfScore.keywordRank(),
                 rrfScore.vectorRank(),
+                disclosure.getRceptNo(),
                 disclosure.getCompany().getCorpName(),
                 disclosure.getReportNm(),
                 chunk.getSectionTitle(),
