@@ -300,7 +300,32 @@
     충분하다는 설계 판단(2절 5번 참고)을 실측 데이터로 뒷받침함.
 
   이로써 **백엔드 MVP(DART 수집 → 청킹 → 하이브리드 검색 → RAG 답변 → API)가
-  완성**됐다. 다음은 Next.js 프론트엔드.
+  완성**됐다.
+
+- **프론트엔드 프로젝트 셋업 + 백엔드 API 연결 검증** — `frontend/`에 Next.js
+  프로젝트를 생성했다(App Router, TypeScript, Tailwind CSS, npm - 전역 설치
+  없이 `npx create-next-app`으로 생성, 최신 안정 버전인 Next.js 16.2.11 /
+  React 19.2.4). 화면 디자인은 다음 단계이고 이번엔 "연결이 되는지"까지만이
+  목표였다.
+
+  백엔드 API 연결 기반: `lib/types.ts`(`AnswerRequest`/`AnswerResponse`/
+  `SourceRef`/`SearchResponse`/`SearchResultItem`/`ProblemDetail` - 2절 "API
+  명세"와 1:1로 맞춤), `lib/api.ts`(`search()`/`askAnswer()` + `ApiError`
+  클래스로 `errorCode` 포함 에러 처리). API base URL은 `NEXT_PUBLIC_API_
+  BASE_URL` 환경변수로 분리(하드코딩 금지 원칙 - `.env.local`, git 제외).
+
+  구현 중 발견한 것: `create-next-app`이 만들어주는 기본 `frontend/.gitignore`의
+  `.env*` 규칙이 `.env.local.example`까지 막아버렸다(백엔드가 `.env`/
+  `.env.example`로 예시 파일은 커밋하는 것과 같은 패턴을 프론트에도 쓰려면
+  예시 파일이 추적 대상이어야 함) - `!.env*.example` 예외를 추가해 해결.
+
+  `app/search-test`(임시 페이지, 디자인 없음)로 실제 연결을 검증했다:
+  브라우저에서 `GET /api/v1/search`를 호출해 결과와 RRF 순위 정보
+  (`rrfScore`/`keywordRank`/`vectorRank`)가 정상 표시됨을 사용자가 직접
+  확인했고, `curl`로 CORS 헤더(`Access-Control-Allow-Origin`)도 GET 실제
+  요청과 POST 프리플라이트(OPTIONS) 양쪽에서 확인했다. `/answers`는 비용이
+  들어 이번엔 테스트하지 않고 `/search`로만 검증(스케줄러는 임베딩만
+  비활성 확인 후 진행 - 기존 원칙 그대로).
 
 ## 2. 현재 프로젝트 상태 요약
 
@@ -348,13 +373,15 @@ insight-stock/
 │       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
 │       ├── prompts/rag-system-prompt.txt  # RAG system prompt (코드와 분리, 튜닝 시 재컴파일 불필요)
 │       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql
+├── frontend/               # Next.js 16(App Router, TypeScript, Tailwind CSS)
+│   ├── app/                # search-test/(연결 확인용 임시 페이지, 디자인 없음)
+│   ├── lib/                # api.ts(search()/askAnswer()/ApiError), types.ts(백엔드 DTO와 1:1)
+│   ├── .env.local          # NEXT_PUBLIC_API_BASE_URL (git 제외)
+│   └── .env.local.example  # 커밋 대상 (frontend/.gitignore에 !.env*.example 예외 추가함)
 ├── tests/exploration/     # DART API 탐색용 파이썬 스크립트 (참고용, 자동화 테스트 아님)
 ├── .env / .env.example    # DART_API_KEY, POSTGRES_USER, POSTGRES_PASSWORD
 └── requirements.txt       # tests/exploration/ 실행용 파이썬 의존성
 ```
-
-`frontend/`는 아직 없음 (나중에 추가 예정). Controller도 아직 없음(프론트엔드 연동
-시점에 필요).
 
 ### 현재 데이터 상태 (2026-07-22 기준, 임베딩 완료 후)
 
@@ -513,12 +540,24 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    CORS 설정을 구현하고 실 서버로 검증까지 마쳤다. **이로써 백엔드 MVP가
    완성됐다**(DART 수집 → 청킹 → 하이브리드 검색 → RAG 답변 → API). 상세는
    위 1절 마지막 항목, API 명세는 2절 "API 명세" 참고.
-7. **[다음 세션] Next.js 프론트엔드** — `frontend/`(아직 미착수)에서 위 API
-   명세(2절)를 호출하는 화면을 만드는 단계. 우선순위 후보(순서는 착수 시
-   논의): ①질문 입력 → `/answers` 호출 → 답변+출처(DART 링크) 표시,
-   ②`/search` 결과를 RRF 순위(`rrfScore`/`keywordRank`/`vectorRank`)와 함께
-   보여주는 화면(하이브리드 검색 핵심 가치를 시각적으로 증명하는 포트폴리오
-   포인트). 인증(JWT)은 계속 MVP 범위 밖.
+7. **[완료] Next.js 프론트엔드 셋업 + API 연결 검증** — `frontend/`에 Next.js
+   16(App Router/TypeScript/Tailwind) 프로젝트를 생성하고 `lib/api.ts`/
+   `lib/types.ts`로 백엔드 API 연결 기반을 마련, `/search` 실 호출과 CORS를
+   브라우저에서 직접 확인했다. 상세는 위 1절 마지막 항목 참고. 화면 디자인은
+   아직 없음(임시 검증 페이지 `app/search-test`만 존재).
+8. **[다음 세션] 1단계 화면 구현** — 진짜 사용자 화면을 만드는 단계.
+   - **메인 페이지**: 질문 입력 → `POST /api/v1/answers` 호출 → 답변 본문 +
+     출처(DART 링크) 표시.
+   - **"찾지 못했습니다" 케이스**: `sources`가 빈 배열일 때 일반 답변과
+     구분되는 표시(예: 안내 문구/아이콘) - 환각 없이 정직하게 모른다고
+     답하는 것 자체가 이 프로젝트의 핵심 가치이므로, 이걸 애매하게 보여주면
+     그 가치가 묻힘.
+   - **로딩 상태**: `/answers`는 실측 처리 시간이 약 1.9초(2절 "API 명세"
+     참고)라 로딩 인디케이터가 꼭 필요 - 스피너 없이 버튼만 비활성화하면
+     사용자가 멈춘 줄 오해하기 쉬움.
+   - **모바일 반응형**: Tailwind 기본 브레이크포인트로 시작.
+   - `/search`(RRF 순위 노출) 화면은 위 항목들 다음 우선순위로 논의.
+     인증(JWT)은 계속 MVP 범위 밖.
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
@@ -654,7 +693,13 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
   `GlobalExceptionHandler`/`WebConfig`)도 완성되어 실 서버로 검증까지
   끝났음(2절 "API 명세" 참고) - **백엔드 MVP 완성**. `POST /api/v1/answers`,
   `GET /api/v1/search` 그대로 갖다 쓰면 됨.
-- **다음 작업은 Next.js 프론트엔드**(3절 7번, `frontend/` 아직 미착수) - 2절
-  "API 명세"의 요청/응답 형식과 에러 코드 표를 그대로 참고해 화면을 만들면 됨.
-  OpenAI 크레딧 잔액은 이번 세션 검증 비용을 반영해도 여전히 $4.9 이상 유효
-  (Controller 검증은 대부분 `/search`로 진행해 추가 비용이 거의 없었음).
+- Next.js 프론트엔드 셋업(`frontend/` - Next.js 16/TypeScript/Tailwind,
+  `lib/api.ts`/`lib/types.ts`)도 완성되어 백엔드 API 연결까지 브라우저에서
+  직접 검증했음 - 다시 조사할 필요 없이 `lib/api.ts`의 `search()`/
+  `askAnswer()`를 그대로 갖다 쓰면 됨. 아직 화면 디자인은 없음(`app/
+  search-test`는 연결 확인용 임시 페이지, 다음 단계에서 실제 화면으로 교체).
+- **다음 작업은 1단계 화면 구현**(3절 8번 참고) - 메인 페이지(질문→답변→
+  출처), "찾지 못했습니다" 케이스 표시, 로딩 상태(`/answers` 약 1.9초),
+  모바일 반응형 순서로 진행. OpenAI 크레딧 잔액은 이번 세션 검증 비용을
+  반영해도 여전히 $4.9 이상 유효(오늘은 `/search`로만 검증해 추가 비용
+  거의 없음).
