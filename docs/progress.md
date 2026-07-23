@@ -266,6 +266,42 @@
   구현 중 겪은 별개 이슈(OpenAI restricted API key 스코프 부족으로 채팅 완성이
   401로 막혔던 것, 과금 없이 해결)는 아래 4절에 트러블슈팅으로 별도 기록.
 
+- **Controller/API 계층 — 백엔드 MVP 완성** — `AnswerService`/`HybridSearchService`를
+  HTTP로 노출하는 `api/` 패키지를 구현했다. `AnswerController`(`POST
+  /api/v1/answers`), `SearchController`(`GET /api/v1/search` - LLM 호출 없이
+  RRF 순위 정보까지 그대로 노출하는 검색 전용 엔드포인트), `GlobalExceptionHandler`
+  (`@RestControllerAdvice`, RFC 7807 `ProblemDetail` + `errorCode` 확장 필드로
+  프론트가 에러 종류를 분기할 수 있게 함), `WebConfig`(CORS, 허용 origin을
+  `application.yml` 값으로 빼서 배포 시 코드 변경 없이 교체 가능)로 구성.
+  `AnswerResponse`에 `query` 필드를 추가해 프론트가 응답만 보고 어느 질문의
+  답인지 알 수 있게 했다. 두 Controller 모두 처리 시간을 로그로 남겨(나중에
+  스트리밍 필요 시점을 실측으로 판단하기 위함).
+
+  코드를 짜기 전에 엔드포인트 설계(경로/메서드/DTO/예외 처리/CORS/응답 시간)를
+  먼저 제안하고 승인받은 뒤 구현했다. 주요 결정: `/answers`는 LLM 호출이라는
+  부수효과(비용)가 있는 "생성" 액션이라 `POST`, `/search`는 순수 조회라
+  쿼리파라미터 기반 `GET`(REST 관례). `/search`를 별도로 둔 이유는 이 프로젝트의
+  핵심 가치인 하이브리드 검색(BM25+벡터+RRF)이 실제로 어떻게 순위를 매기는지
+  `rrfScore`/`keywordRank`/`vectorRank`를 프론트에서 시각적으로 보여줄 수 있게
+  하기 위함. 에러 응답은 직접 만든 DTO 대신 Spring 표준 `ProblemDetail`을
+  채택 - 프레임워크가 자동 처리하는 케이스(validation 등)와 형식이 통일됨.
+  OpenAI/Elasticsearch/Postgres의 원본 에러 메시지는 절대 클라이언트에 노출하지
+  않고(내부 정보 유출 방지) 서버 로그에만 전체 스택트레이스를 남기도록 설계.
+
+  실제로 서버를 띄워 검증했다:
+  - `POST /api/v1/answers`: 답이 있는 질문(정확한 답변 + 인용 매핑 일치),
+    답이 없는 질문(테슬라, 환각 없이 "찾지 못했습니다") 모두 통과.
+  - `GET /api/v1/search`: `rrfScore`/`keywordRank`/`vectorRank`가 결과마다
+    정확히 노출됨 확인.
+  - 잘못된 요청 4종(빈 `query`, `topK=100` x2, `q` 파라미터 누락) 모두 400 +
+    통일된 `ProblemDetail` 형식(`errorCode=VALIDATION_ERROR`) 확인.
+  - **처리 시간 실측**: `/answers` 1,917ms(정상 상태, 첫 호출은 JIT/커넥션풀
+    워밍업 포함 5,480ms) / `/search` 288ms - 스트리밍 없이 동기 응답으로
+    충분하다는 설계 판단(2절 5번 참고)을 실측 데이터로 뒷받침함.
+
+  이로써 **백엔드 MVP(DART 수집 → 청킹 → 하이브리드 검색 → RAG 답변 → API)가
+  완성**됐다. 다음은 Next.js 프론트엔드.
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
@@ -304,8 +340,9 @@ insight-stock/
 │       ├── indexing/      # ChunkDocument, ChunkDocumentRepository, IndexingService(+Scheduler)
 │       ├── embedding/     # EmbeddingClient/OpenAiEmbeddingClient, TokenCounter, EmbeddingService(+Scheduler), dto/
 │       ├── search/        # KeywordSearchService, VectorSearchService, RrfFuser, HybridSearchService, dto/
-│       └── rag/           # PromptBuilder, ChatCompletionClient/OpenAiChatCompletionClient,
-│                          # CitationParser, AnswerService, dto/
+│       ├── rag/           # PromptBuilder, ChatCompletionClient/OpenAiChatCompletionClient,
+│       │                  # CitationParser, AnswerService, dto/
+│       └── api/           # AnswerController, SearchController, GlobalExceptionHandler, WebConfig, dto/
 │   └── src/main/resources/
 │       ├── application.yml
 │       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
@@ -353,6 +390,72 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 ```
 
 자세한 확인 명령(psql `\dt`, Elasticsearch 플러그인 확인 등)은 루트 [README.md](../README.md) 참고.
+
+### API 명세 (프론트엔드 개발 참고용)
+
+인증은 아직 없음(MVP 범위에서 제외, 나중에 JWT 등으로 추가 예정). base URL은
+로컬 개발 기준 `http://localhost:8080`.
+
+**`POST /api/v1/answers`** — 하이브리드 검색 + LLM 답변 생성 (비용 발생, OpenAI
+채팅 완성 호출)
+
+```jsonc
+// 요청
+{ "query": "한국투자증권이 발행한 주가연계파생결합사채 상품은 어떤 내용인가요?", "topK": 10 }
+// topK는 선택(생략 시 서버 기본값 10), 1~50 범위
+
+// 응답 200
+{
+  "query": "...",
+  "answer": "... 답변 본문에 [1][2] 형태로 인용 표시 ...",
+  "sources": [
+    { "rceptNo": "20260721000155", "corpName": "한국투자증권",
+      "reportNm": "투자설명서(일괄신고)", "sectionTitle": null,
+      "dartUrl": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260721000155" }
+  ]
+}
+```
+
+**`GET /api/v1/search?q=...&topK=10`** — 하이브리드 검색만(LLM 호출 없음, 비용
+거의 없음). RRF 순위 정보를 그대로 노출 - 하이브리드 검색이 실제로 어떻게
+동작하는지 프론트에서 보여줄 때 사용.
+
+```jsonc
+// 응답 200
+{
+  "query": "...",
+  "results": [
+    { "corpName": "신영증권", "reportNm": "증권발행실적보고서", "sectionTitle": null,
+      "content": "...", "rrfScore": 0.0328, "keywordRank": 1, "vectorRank": 1 }
+  ]
+}
+```
+
+**에러 응답** — 두 엔드포인트 모두 실패 시 RFC 7807 `ProblemDetail` 형식 +
+`errorCode` 확장 필드로 통일:
+
+```jsonc
+{
+  "type": "about:blank", "title": "Bad Request", "status": 400,
+  "detail": "query: 질문을 입력해주세요.",
+  "instance": "/api/v1/answers", "errorCode": "VALIDATION_ERROR"
+}
+```
+
+| `errorCode` | HTTP 상태 | 발생 상황 |
+|---|---|---|
+| `VALIDATION_ERROR` | 400 | 빈 query, topK 범위(1~50) 초과, 필수 파라미터 누락 |
+| `LLM_UNAVAILABLE` | 502 | OpenAI 채팅 완성 호출 실패 |
+| `SEARCH_UNAVAILABLE` | 502 | 검색용 쿼리 임베딩 실패 |
+| `INTERNAL_ERROR` | 500 | 그 외 예상 못 한 서버 오류 |
+
+**처리 시간 실측**(실 서버 기준, 2026-07-23): `/answers` 1,917ms(정상 상태,
+첫 호출은 워밍업 포함 5,480ms) / `/search` 288ms. 지금은 동기 응답으로
+충분하다고 판단(스트리밍 미도입) - 이 수치가 늘어나면(예: top-k 확대, 더 큰
+모델로 교체) 스트리밍(SSE) 재검토 근거로 삼을 것.
+
+CORS는 `application.yml`의 `cors.allowed-origins`(현재 `http://localhost:3000`)
+로 허용 - Next.js 프론트를 다른 포트/도메인에서 띄운다면 이 값부터 확인.
 
 ## 3. 다음에 할 일
 
@@ -405,10 +508,17 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    질문"(환각 없이 "찾지 못했습니다")을 모두 확인 - CLAUDE.md 핵심 가치(환각
    제어)가 실동작으로 증명됨. 비용 2건 합계 $0.0017. 상세는 위 1절 참고,
    `AnswerServiceManualIT`에 회귀 검증용으로 두 시나리오 그대로 보존.
-6. **[다음 세션] Controller/API 계층** — `AnswerService.answer(query)`를 HTTP로
-   노출하는 REST 엔드포인트(예: `POST /api/answers`)를 추가하는 단계. 이후
-   Next.js 프론트엔드(`frontend/`, 아직 미착수)에서 이 API를 호출하는 흐름으로
-   이어질 예정.
+6. **[완료] Controller/API 계층** — `api/` 패키지로 `POST /api/v1/answers`,
+   `GET /api/v1/search` 2개 엔드포인트와 전역 예외 처리(`ProblemDetail`),
+   CORS 설정을 구현하고 실 서버로 검증까지 마쳤다. **이로써 백엔드 MVP가
+   완성됐다**(DART 수집 → 청킹 → 하이브리드 검색 → RAG 답변 → API). 상세는
+   위 1절 마지막 항목, API 명세는 2절 "API 명세" 참고.
+7. **[다음 세션] Next.js 프론트엔드** — `frontend/`(아직 미착수)에서 위 API
+   명세(2절)를 호출하는 화면을 만드는 단계. 우선순위 후보(순서는 착수 시
+   논의): ①질문 입력 → `/answers` 호출 → 답변+출처(DART 링크) 표시,
+   ②`/search` 결과를 RRF 순위(`rrfScore`/`keywordRank`/`vectorRank`)와 함께
+   보여주는 화면(하이브리드 검색 핵심 가치를 시각적으로 증명하는 포트폴리오
+   포인트). 인증(JWT)은 계속 MVP 범위 밖.
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
@@ -540,6 +650,11 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
   두 시나리오가 회귀 검증용으로 보존돼 있으니 참고 가능. OpenAI API 키는
   restricted key라면 Chat completions 스코프가 켜져 있어야 함(4절 트러블슈팅
   참고).
-- **다음 작업은 Controller/API 계층**(3절 6번 참고) - `AnswerService`를 REST
-  엔드포인트로 노출한 뒤 Next.js 프론트엔드 연동으로 이어간다. OpenAI 크레딧
-  잔액은 이번 세션 검증 비용($0.0017)을 반영해 약 $4.93 그대로 유효.
+- Controller/API 계층(`api/` 패키지 - `AnswerController`/`SearchController`/
+  `GlobalExceptionHandler`/`WebConfig`)도 완성되어 실 서버로 검증까지
+  끝났음(2절 "API 명세" 참고) - **백엔드 MVP 완성**. `POST /api/v1/answers`,
+  `GET /api/v1/search` 그대로 갖다 쓰면 됨.
+- **다음 작업은 Next.js 프론트엔드**(3절 7번, `frontend/` 아직 미착수) - 2절
+  "API 명세"의 요청/응답 형식과 에러 코드 표를 그대로 참고해 화면을 만들면 됨.
+  OpenAI 크레딧 잔액은 이번 세션 검증 비용을 반영해도 여전히 $4.9 이상 유효
+  (Controller 검증은 대부분 `/search`로 진행해 추가 비용이 거의 없었음).
