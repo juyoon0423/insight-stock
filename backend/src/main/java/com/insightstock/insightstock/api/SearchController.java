@@ -63,6 +63,7 @@ public class SearchController {
                 chunk.content(),
                 chunk.rrfScore(),
                 chunk.keywordRank(),
-                chunk.vectorRank());
+                chunk.vectorRank(),
+                chunk.duplicateSources());
     }
 }

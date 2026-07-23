@@ -48,6 +48,7 @@ class PromptBuilderTest {
                 reportNm,
                 sectionTitle,
                 ChunkSource.SECTION,
-                "내용 " + id);
+                "내용 " + id,
+                List.of());
     }
 }

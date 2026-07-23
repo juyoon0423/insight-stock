@@ -1,5 +1,6 @@
 package com.insightstock.insightstock.rag;
 
+import com.insightstock.insightstock.dart.DartUrls;
 import com.insightstock.insightstock.rag.dto.AnswerResponse;
 import com.insightstock.insightstock.rag.dto.ChatCompletionResult;
 import com.insightstock.insightstock.rag.dto.RagPrompt;
@@ -26,7 +27,6 @@ public class AnswerService {
     private static final double PRICE_PER_MILLION_OUTPUT_TOKENS = 0.60;
 
     private static final String NO_ANSWER_MESSAGE = "제공된 공시 자료에서는 이 질문에 답할 수 있는 내용을 찾지 못했습니다.";
-    private static final String DART_VIEWER_URL_PREFIX = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=";
 
     private final HybridSearchService hybridSearchService;
     private final PromptBuilder promptBuilder;
@@ -81,6 +81,6 @@ public class AnswerService {
                 chunk.corpName(),
                 chunk.reportNm(),
                 chunk.sectionTitle(),
-                DART_VIEWER_URL_PREFIX + chunk.rceptNo());
+                DartUrls.viewerUrl(chunk.rceptNo()));
     }
 }

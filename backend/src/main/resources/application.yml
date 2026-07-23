@@ -78,6 +78,13 @@ hybrid-search:
   top-k: 10
   # RRF 상수(Cormack et al., 2009 권장값 - 순위 차이의 영향을 완만하게 만듦).
   rrf-k: 60
+  dedup:
+    # content가 완전히 동일한(공백만 다른 것도 포함) 청크를 대표 1건으로 합칠지 여부.
+    # 2026-07-23 발견: 일괄신고/다회차 발행 관행 때문에 같은 문구가 여러 공시에
+    # 반복 등장하는 경우가 있어(dart-findings.md 참고) top-K가 중복으로 채워지는
+    # 문제를 완화한다. 2026-07-23 적용 전후 비교 검증 완료 후 true로 전환
+    # (dart-findings.md 2-10, progress.md 참고).
+    enabled: true
 
 cors:
   # Next.js 개발 서버 기본 포트. 배포 시 실제 프론트 도메인으로 교체(콤마로 여러 개 가능).
