@@ -90,6 +90,8 @@ cd backend && ./gradlew bootRun
 
 - **전역 시스템 변경(`brew install/uninstall`, `sudo`, 전역 npm 등)은 실행 전 반드시 사용자에게 확인**받는다. 과거 `brew`가 다른 도구를 삭제한 사고가 있었음. 가능하면 프로젝트 로컬 도구(예: gradlew)를 사용한다.
 
+- **유료 외부 API(OpenAI 등)를 실제로 호출하는 테스트는 기본 `test`에서 제외한다.** `@Tag("manual")`로 표시하고 `./gradlew test`에서는 `excludeTags`로 걸러지도록 한다(`backend/build.gradle` 참고) — 수동 검증 전용 태스크(`./gradlew manualTest`)로만 실행한다. `./gradlew test`(기본 태스크)는 항상 비용 0이어야 한다 — 나중에 CI/CD가 붙으면 커밋마다 자동 실행되므로, 여기서 새는 유료 호출은 사고가 아니라 반복 청구가 된다. 새 테스트를 만들 때 실제 LLM/임베딩 API를 호출한다면 반드시 이 패턴을 따를 것(2026-07-23, `AnswerServiceManualIT`/`HybridSearchManualIT`가 태그 없이 기본 `test`에 섞여 있다가 전체 테스트 실행 중 의도치 않게 과금된 사고로 발견).
+
 ## 작업 방식
 
 - **한 번에 한 걸음**씩 진행한다. 요청하지 않은 범위(엔티티만 요청했는데 Service까지 등)를 미리 만들지 않는다.

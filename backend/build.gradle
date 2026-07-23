@@ -40,9 +40,29 @@ dependencies {
 }
 
 tasks.named('test') {
-	useJUnitPlatform()
+	// 유료 외부 API(OpenAI 등)를 실제로 호출하는 @Tag("manual") 테스트는 기본 test에서
+	// 제외한다 - CI/커밋마다 자동 실행되면 안 되기 때문(CLAUDE.md 참고). 수동 검증은
+	// manualTest 태스크로만 돌린다.
+	useJUnitPlatform {
+		excludeTags 'manual'
+	}
 	environment "SPRINGDOTENV_DIRECTORY", ".."
 	// ManualIT류 검증 테스트는 assert가 아니라 println 결과를 사람이 읽는 용도라 필요.
+	testLogging {
+		showStandardStreams = true
+	}
+}
+
+tasks.register('manualTest', Test) {
+	group = 'verification'
+	description = '유료 외부 API(OpenAI 등)를 실제로 호출하는 @Tag("manual") 테스트만 실행한다. ' +
+			'비용이 발생하므로 필요할 때 사람이 직접 실행할 것 - CI/자동 실행 대상 아님.'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform {
+		includeTags 'manual'
+	}
+	environment "SPRINGDOTENV_DIRECTORY", ".."
 	testLogging {
 		showStandardStreams = true
 	}

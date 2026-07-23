@@ -2,15 +2,18 @@ package com.insightstock.insightstock.rag;
 
 import com.insightstock.insightstock.rag.dto.AnswerResponse;
 import com.insightstock.insightstock.rag.dto.SourceRef;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
 // 실제 OpenAI Chat Completions API를 호출하는 수동 검증용 - 비용이 드므로 CI/자동 실행
-// 대상이 아니다. 확인할 세 가지:
+// 대상이 아니다. @Tag("manual")로 표시해 기본 `./gradlew test`에서 제외되고
+// `./gradlew manualTest`로만 실행되게 한다(build.gradle 참고). 확인할 세 가지:
 // 1) 컨텍스트에 답이 있는 질문 -> 정확히 답하고 출처가 맞는가
 // 2) 컨텍스트에 답이 없는 질문(DART와 무관한 회사) -> "찾지 못했습니다"라고 하는가
 // 3) 출처 링크(dartUrl)가 실제 DART 원문 뷰어 URL 형식인가
+@Tag("manual")
 @SpringBootTest
 class AnswerServiceManualIT {
 

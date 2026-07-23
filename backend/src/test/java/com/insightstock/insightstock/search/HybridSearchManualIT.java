@@ -6,6 +6,7 @@ import com.insightstock.insightstock.search.dto.KeywordMatch;
 import com.insightstock.insightstock.search.dto.RankedChunk;
 import com.insightstock.insightstock.search.dto.VectorMatch;
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -13,11 +14,15 @@ import org.springframework.transaction.annotation.Transactional;
 
 // 실제 ES/Postgres/OpenAI를 그대로 쓰는 수동 검증용 - 정기 CI 대상이 아니라
 // 하이브리드 검색을 구현하면서 단계별로 결과를 눈으로 확인하기 위한 도구다.
-// 질의 3종은 실제 DB에 있는 회사/공시를 근거로 골랐다:
+// vectorSearchPreview/hybridSearchPreview는 질의마다 OpenAI 임베딩 API를 실제로
+// 호출한다(건당 비용은 미미하지만 0은 아님) - @Tag("manual")로 표시해 기본
+// `./gradlew test`에서 제외되고 `./gradlew manualTest`로만 실행되게 한다
+// (build.gradle 참고). 질의 3종은 실제 DB에 있는 회사/공시를 근거로 골랐다:
 // - 키워드 지향: 정확한 회사명+보고서명 조합이라 BM25가 유리할 것으로 예상
 // - 의미 지향: "차입금"이라는 단어 없이 "빌린 돈"으로 패러프레이즈 - 기도산업의
 //   실제 청크(총차입금 규모 추이)에 벡터 검색이 도달하는지 확인하는 목적
 // - 일반: 회사명+상품명 조합 - 두 검색 다 무난히 맞아야 하는 케이스
+@Tag("manual")
 @SpringBootTest
 class HybridSearchManualIT {
 

@@ -437,6 +437,26 @@
   "청크 1개 = 공시 1개" 관계가 깨지고 대표 청크 하나만 남았을 때 "어느 공시가
   정답 출처인지" 모호해져 출처 명시라는 핵심 가치와 충돌 소지가 있었다.
 
+- **유료 API 호출 테스트를 기본 `test`에서 분리** — 위 작업을 검증하며
+  `./gradlew test`(전체 스위트)를 돌렸다가 `AnswerServiceManualIT`가 실
+  LLM을 2회 호출(합계 $0.00188)하는 걸 뒤늦게 알아챘다. 애초에 이 클래스는
+  "비용이 드므로 CI/자동 실행 대상이 아니다"라는 주석까지 있었지만, 그 의도를
+  강제하는 장치(태그/태스크 분리)가 없어서 기본 `test`에 그대로 섞여 있었다 -
+  지금은 사소한 금액이지만 나중에 CI/CD가 붙으면 커밋마다 자동 과금되는
+  구조적 문제였다.
+
+  `AnswerServiceManualIT`(LLM)와 `HybridSearchManualIT`(임베딩 API 호출,
+  `vectorSearchPreview`/`hybridSearchPreview`)에 `@Tag("manual")`을 붙이고,
+  `backend/build.gradle`의 `test` 태스크는 `excludeTags 'manual'`로 걸러지게,
+  별도 `manualTest` 태스크(`includeTags 'manual'`)를 새로 등록해 수동
+  실행만 가능하게 분리했다. 다른 테스트 클래스(`XmlTextExtractorTest`,
+  `PromptBuilderTest`, `CitationParserTest`, `RrfFuserTest`,
+  `InsightStockApplicationTests`)는 전수 확인한 결과 Spring 컨텍스트 로딩
+  이외의 외부 API 호출이 없어 안전함을 확인했다. `./gradlew test` 재실행으로
+  두 ManualIT 클래스가 완전히 스킵됨을(테스트 결과 파일이 새로 생성 안 됨)
+  확인했고, CLAUDE.md에 "유료 외부 API를 호출하는 테스트는 기본 test에서
+  제외한다"는 규칙을 추가해 재발을 방지했다.
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
