@@ -368,6 +368,75 @@
   두 번 나온다 - 틀린 데이터는 아니고(실제로 다른 청크를 인용) 백엔드
   계약대로 정확한 동작이라 이번엔 그대로 두기로 함(사용자 확인 완료).
 
+- **`NEXT_PUBLIC_USE_MOCK_ANSWERS` 목업 토글 상시 도구화** — 매번 목업 파일을
+  만들었다 지우는 대신, `.env.local`(로컬 전용, `true`)/`.env.local.example`
+  (커밋 대상, 기본값 `false`)로 상시 토글 가능하게 만들었다. `lib/mockAnswers.ts`
+  는 더 이상 지우지 않고 2~4단계 화면 작업에서도 계속 재사용한다. 목업 모드일
+  땐 헤더에 노란 배지("목업 모드 — 예시 질문 3개만 정상 응답")를 띄워, 이전에
+  겪은 "무관한 질문에 엉뚱한 답이 나와 헷갈리는" 문제를 화면에서부터 방지했다.
+
+- **2단계 화면 — 하이브리드 검색(RRF) 시각화 `/search` 페이지** — 코드를 짜기
+  전에 시각화 방식 3안(순위표/3열 범프차트/카드+듀얼마커)을 비교 제안하고,
+  "안 C(카드+듀얼마커)를 기본으로, 안 B(범프차트)는 상단 요약용 보조로 나중에"
+  라는 결정을 받은 뒤 단계적으로 구현했다.
+
+  1단계(이번에 완료): `lib/rankScale.ts`(순위→트랙 위치 % 변환 순수 함수,
+  범프차트에서도 재사용 예정) + `components/search/`(`DualRankMarker`-키워드/
+  벡터 순위를 점 두 개로 표시해 가까우면 합의형·멀면 편중형이 한눈에 보이게 함,
+  `RankedResultCard`-순위 배지+RRF점수+content 180자 미리보기+더보기,
+  `SearchResultList`-top-10 강조+11~20위 접기, `SearchQueryForm`) +
+  `app/search/page.tsx`(신규 라우트, `topK=20` 고정). 메인 페이지 헤더에
+  `/search`로 가는 작은 링크를 추가했고, 대체된 임시 페이지 `app/search-test`는
+  삭제했다.
+
+  **topK를 10이 아니라 20으로 요청한 이유**: top-10만 받으면 "한쪽 검색에서는
+  1위였지만 최종 순위에서 밀려난 청크"가 응답에 아예 안 잡혀서 "왜 하이브리드가
+  필요한가"라는 이야기가 완성되지 않는다. 실제로 20위까지 받아보니 "GRT의
+  유상증자 결정 내용은?" 질의에서 키워드 1위인데 벡터 후보 50위 안에 아예 없어
+  최종 8위로 밀린 청크가 확인됐다 - 강조 로직(3단계)의 실제 근거 데이터로 확보.
+
+  예시 질문 칩 3개도 실 `/search` 호출(비용 없음)로 미리 검증해서 골랐다:
+  "신영증권의 증권발행실적보고서 내용은?"(키워드 1위=벡터 1위, 합의형),
+  "GRT의 유상증자 결정 내용은?"(키워드 8위·벡터 1위, 편중형), "한국투자증권
+  ELS"(혼합형, 기존 검증 질문 재사용).
+
+- **top-K 중복 콘텐츠 발견 및 제거 — 검색/RAG 품질 문제 해결** — 2단계 화면을
+  확인하던 사용자가 "2·3위 카드 content가 거의 동일하다"는 걸 직접 발견했다.
+  코드를 고치기 전에 DB를 먼저 조회해 규모(전체 청크의 19.3%가 다른 청크와
+  content 완전 동일, 그중 65%가 500자 이상)와 원인(전량 `chunk_source=SECTION`
+  이라 슬라이딩 윈도우 오버랩 버그가 아니라 일괄신고/다회차 발행 같은 공시
+  업무 관행이 원인)을 실측으로 확인한 뒤 대응했다. 상세 원인 분석과 3가지
+  반복 패턴은 [dart-findings.md 2-10](./dart-findings.md)에 기록.
+
+  대응은 `HybridSearchService`에서 RRF 융합 후(content가 있어야 중복 판정이
+  가능해서 hydrate 순서를 top-K로 자르기 전으로 변경) content 정규화 완전
+  일치 기준으로 대표 청크만 남기는 방식(`hybrid-search.dedup.enabled`로 토글,
+  기본 `true`). **"완전 일치"만 쓰고 날짜/숫자를 무시하는 퍼지 매칭은 의도적으로
+  배제**했다 - "Ⅳ. 조달된 자금의 사용내역" 같은 섹션은 회차마다 실제로 다른
+  금액이 적혀있어서, 숫자를 무시하면 서로 다른 금액을 같다고 오판할 위험이
+  있기 때문(금융 도메인에서 이런 오판은 출처 명시라는 핵심 가치와 정면 충돌).
+  제거된 출처는 버리지 않고 `RankedChunk.duplicateSources`(신규 DTO
+  `DuplicateDisclosureRef`)에 보존해 `/search` 화면에서 "관련 공시 N건
+  보기"로 펼쳐 DART 링크까지 전부 확인할 수 있게 했다. `dartUrl` 생성 로직은
+  `AnswerService`에만 있던 걸 `dart.DartUrls` 공용 유틸로 빼서 두 곳에서
+  재사용하도록 정리했다.
+
+  적용 전후를 실측으로 비교했다: `/search`에서 중복이 없던 질의(GRT,
+  파라택시스코리아)는 dedup 전후로 top-10이 1도 안 바뀌어 회귀 없음을
+  확인했고, 중복이 심했던 신영증권 질의는 top-4를 채우던 중복 표지가 정리되며
+  이전에 안 보이던 진짜 다른 정보(한국투자신탁운용, 신영증권 실제 재무 정보
+  섹션)가 top-10에 새로 들어왔다. **가장 결정적인 증거는 `/answers` 전후
+  비교**(실 LLM 호출 2회, 합계 $0.0012): dedup 전엔 답변이 표지 정보로만
+  채워졌는데("회사명/대표이사/주소... [1]", 출처 1건), dedup 후엔 같은
+  질의에서 실제 재무 정보까지 포함됐다("조달된 자금의 사용내역... 모집총액은
+  68,100,000원... [10]", 출처 3건) - "Top-K가 중복으로 채워지면 실질 정보량이
+  준다"는 우려가 추측이 아니라 실측으로 확인된 품질 저하였음이 증명됐다.
+  입력 토큰도 4,837→3,558개로 줄어 비용도 함께 낮아졌다.
+
+  색인 단계에서 아예 중복을 제거하는 대안도 검토했지만 보류했다 - 그러면
+  "청크 1개 = 공시 1개" 관계가 깨지고 대표 청크 하나만 남았을 때 "어느 공시가
+  정답 출처인지" 모호해져 출처 명시라는 핵심 가치와 충돌 소지가 있었다.
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
@@ -400,12 +469,13 @@ insight-stock/
 │       ├── InsightStockApplication.java
 │       ├── domain/        # Company, Disclosure, Chunk, DocumentStatus, ChunkType, ChunkSource, support/VectorType
 │       ├── repository/    # CompanyRepository, DisclosureRepository, ChunkRepository
-│       ├── dart/          # DartListClient, DartDocumentClient, XmlTextExtractor, DartApiException, dto/
+│       ├── dart/          # DartListClient, DartDocumentClient, XmlTextExtractor, DartApiException, DartUrls, dto/
 │       ├── collector/     # DisclosureCollectorService(+Scheduler), DocumentCollectorService(+Scheduler)
 │       ├── chunking/      # ChunkingService(+Scheduler)
 │       ├── indexing/      # ChunkDocument, ChunkDocumentRepository, IndexingService(+Scheduler)
 │       ├── embedding/     # EmbeddingClient/OpenAiEmbeddingClient, TokenCounter, EmbeddingService(+Scheduler), dto/
 │       ├── search/        # KeywordSearchService, VectorSearchService, RrfFuser, HybridSearchService, dto/
+│       │                  # (dto/에 RankedChunk.duplicateSources - DuplicateDisclosureRef)
 │       ├── rag/           # PromptBuilder, ChatCompletionClient/OpenAiChatCompletionClient,
 │       │                  # CitationParser, AnswerService, dto/
 │       └── api/           # AnswerController, SearchController, GlobalExceptionHandler, WebConfig, dto/
@@ -415,11 +485,13 @@ insight-stock/
 │       ├── prompts/rag-system-prompt.txt  # RAG system prompt (코드와 분리, 튜닝 시 재컴파일 불필요)
 │       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql
 ├── frontend/               # Next.js 16(App Router, TypeScript, Tailwind CSS)
-│   ├── app/                # page.tsx(메인 화면), search-test/(연결 확인용 임시 페이지)
-│   ├── components/         # QuestionForm, AnswerText, SourceCard, ResultPanel
+│   ├── app/                # page.tsx(메인 화면), search/(2단계 RRF 시각화 화면)
+│   ├── components/         # QuestionForm, AnswerText, SourceCard, ResultPanel,
+│   │                       # search/(SearchQueryForm, RankedResultCard, DualRankMarker, SearchResultList)
 │   ├── lib/                # api.ts(search()/askAnswer()/ApiError), types.ts(백엔드 DTO와 1:1),
-│   │                       # citations.ts(인용 번호 재매핑)
-│   ├── .env.local          # NEXT_PUBLIC_API_BASE_URL (git 제외)
+│   │                       # citations.ts(인용 번호 재매핑), rankScale.ts(순위→트랙 위치 변환),
+│   │                       # mockAnswers.ts(NEXT_PUBLIC_USE_MOCK_ANSWERS 토글용 상시 개발 도구)
+│   ├── .env.local          # NEXT_PUBLIC_API_BASE_URL, NEXT_PUBLIC_USE_MOCK_ANSWERS (git 제외)
 │   └── .env.local.example  # 커밋 대상 (frontend/.gitignore에 !.env*.example 예외 추가함)
 ├── tests/exploration/     # DART API 탐색용 파이썬 스크립트 (참고용, 자동화 테스트 아님)
 ├── .env / .env.example    # DART_API_KEY, POSTGRES_USER, POSTGRES_PASSWORD
@@ -496,7 +568,14 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
   "query": "...",
   "results": [
     { "corpName": "신영증권", "reportNm": "증권발행실적보고서", "sectionTitle": null,
-      "content": "...", "rrfScore": 0.0328, "keywordRank": 1, "vectorRank": 1 }
+      "content": "...", "rrfScore": 0.0328, "keywordRank": 1, "vectorRank": 1,
+      // content가 완전히 동일해 이 결과 하나로 합쳐진 다른 공시들의 출처.
+      // hybrid-search.dedup.enabled(기본 true)가 꺼져있거나 중복이 없으면 빈 배열.
+      // dart-findings.md 2-10 참고.
+      "duplicateSources": [
+        { "rceptNo": "20260721000084", "corpName": "신영증권", "reportNm": "증권발행실적보고서",
+          "sectionTitle": null, "dartUrl": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260721000084" }
+      ] }
   ]
 }
 ```
@@ -598,6 +677,21 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    항목 참고.
    - `/search`(RRF 순위 노출) 화면은 다음 우선순위로 논의 예정(미확정).
      인증(JWT)은 계속 MVP 범위 밖.
+9. **[진행 중] 2단계 화면 — 하이브리드 검색(RRF) 시각화** — 시각화 방식 설계안을
+   먼저 제안·합의(안 C 카드+듀얼마커 기본 + 안 B 범프차트는 상단 요약용으로
+   나중에)한 뒤 단계적으로 구현 중.
+   - **[완료]** 카드 리스트 + 듀얼 마커(`app/search/page.tsx`,
+     `components/search/`), topK=20 요청 + top-10 강조/11~20위 접기, 예시
+     질문 3개(합의형/편중형/혼합형) 실 API로 검증. 상세는 위 1절 참고.
+   - **[완료, 계획에 없던 발견]** 화면을 확인하다 top-K 중복 콘텐츠 문제를
+     발견해 먼저 처리했다 — 전체 청크의 19.3%가 다른 청크와 content 완전
+     동일, `HybridSearchService`에 content 기준 중복 제거 추가
+     (`hybrid-search.dedup.enabled: true`), `/search`에 "관련 공시 N건"
+     표시까지 완료. `/answers` 품질이 실측으로 개선됨을 확인(표지 정보만 →
+     실제 재무 정보 포함). 상세는 위 1절 및 dart-findings.md 2-10 참고.
+   - **[남음]** 3단계: "한쪽에서만 강했던 청크" 강조 로직(키워드/벡터 순위
+     차이가 큰 경우 시각적으로 눈에 띄게). 4단계: 상단 요약용 범프차트(안 B,
+     상위 5개만, 모바일에선 숨김/세로 전환).
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
@@ -625,6 +719,15 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
   폴백 자체를 거의 안 타게 만드는 근본 해결로 바꿨다. `XmlTextExtractor`의 3단계
   파싱(엄격→정제 후 재시도→정규식 폴백) 도입 후 폴백 비율 42.1%→12.5%, 786,390자
   문서의 표 미압축 청크 비율 72.1%→3.6%까지 개선. 상세: dart-findings.md 2-5, 2-7.
+- **[해결됨] top-K가 중복 콘텐츠로 채워져 실질 정보량이 줄던 문제** — 2단계
+  화면(`/search`)을 확인하던 중 사용자가 "2·3위 카드 content가 거의 같다"고
+  발견. DB 조회로 전체 청크의 19.3%가 다른 청크와 content 완전 동일함을
+  확인했고, 전량 `chunk_source=SECTION`이라 슬라이딩 윈도우 버그가 아니라
+  일괄신고/다회차 발행 같은 공시 업무 관행이 원인임을 데이터로 증명했다.
+  `HybridSearchService`에 content 완전 일치 기준 중복 제거를 추가
+  (`hybrid-search.dedup.enabled: true`, 날짜/숫자 무시하는 퍼지 매칭은 금액
+  오판 위험 때문에 의도적으로 배제). `/answers` 전후 비교로 품질 개선을
+  실측 확인(표지 정보만 → 실제 재무 정보 포함). 상세: dart-findings.md 2-10.
 - **JPA: IDENTITY 생성 전략 + orphanRemoval 컬렉션을 재사용할 때는 clear() 직후
   flush 필요** — `Chunk.id`가 `GenerationType.IDENTITY`라 새 엔티티 INSERT가
   즉시 실행되는데, `orphanRemoval=true`로 인한 기존 엔티티 DELETE는 flush
@@ -739,8 +842,13 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
   `askAnswer()`를 그대로 갖다 쓰면 됨.
 - **1단계 화면(메인 페이지)도 완성됨**(3절 8번 참고) - `app/page.tsx` +
   `components/`로 질문→답변→출처 화면이 실제 API(`askAnswer()`)에 연결돼
-  있고, 예시 질문 칩 2개는 실 DB 기준으로 답이 확실히 나오는 질문으로
-  검증돼 있음. `app/search-test`는 아직 연결 확인용 임시 페이지로 남아있음
-  (다음에 `/search` 화면을 만들면 대체될 후보).
-- **다음 작업은 미확정** - `/search`(RRF 순위 노출) 화면 또는 인증(JWT) 중
-  다음 세션 시작 시 사용자와 논의해서 정할 것.
+  있고, 예시 질문 칩 3개(`한국투자증권 ELS`/`파라택시스코리아 합병`/`테슬라`)는
+  실 DB·실 API 기준으로 검증돼 있음. `NEXT_PUBLIC_USE_MOCK_ANSWERS=true`로
+  목업 모드 전환 가능(`lib/mockAnswers.ts`, 헤더에 노란 배지로 표시).
+- **2단계 화면(`/search`, RRF 시각화) 1차 구현 완료, 진행 중**(3절 9번 참고) -
+  `app/search/page.tsx` + `components/search/`로 카드+듀얼마커 시각화까지
+  완성. **다음 작업은 3단계(편중형 강조 로직)와 4단계(범프차트 요약)** -
+  3절 9번에 남은 작업 정리돼 있음.
+- **top-K 중복 콘텐츠 제거도 완료**(1절 마지막 항목, dart-findings.md 2-10) -
+  `hybrid-search.dedup.enabled: true`로 활성화돼 있고 `/search`·`/answers`
+  양쪽에 자동 적용됨. 다시 조사할 필요 없음.
