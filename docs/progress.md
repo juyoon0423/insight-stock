@@ -227,6 +227,45 @@
   5,201건 규모에서는 플래너가 기본적으로 `Seq Scan`을 선택한다 - 인덱스 결함이
   아니라 테이블이 작을 때 흔한 정상 동작(데이터가 늘면 자연히 인덱스를 쓰게 됨).
 
+- **RAG 답변 생성 — 환각 제어 + 출처 명시(CLAUDE.md 핵심 목표) 실동작 검증 완료** —
+  코드를 짜기 전에 설계안(전체 흐름/프롬프트/모델·비용/출처 표시/top-k)을 먼저
+  제안하고 사용자 승인을 받은 뒤 한 단계씩 구현했다. 새 `rag/` 패키지: `PromptBuilder`
+  (`HybridSearchService`의 `RankedChunk` 리스트를 `[1] (회사명 / 공시유형 / 섹션명)`
+  형식으로 번호 매겨 조립, system prompt는 `src/main/resources/prompts/
+  rag-system-prompt.txt`로 분리해 코드 재컴파일 없이 튜닝 가능하게 함),
+  `ChatCompletionClient`/`OpenAiChatCompletionClient`(임베딩 클라이언트와 동일한
+  `RestClient` 패턴), `CitationParser`(답변 텍스트에서 `[숫자]` 인용을 정규식으로
+  추출하는 순수 함수), `AnswerService`(검색→프롬프트→LLM→출처 후처리를 엮는
+  조립점 - 실제로 인용된 출처만 노출, 검색 결과가 없으면 LLM 호출 없이 바로
+  "찾지 못했습니다" 반환해 비용 절감).
+
+  **핵심 설계 원칙 — 모델에게 URL/출처를 만들게 하지 않는다**: 출처(rcept_no,
+  회사명, DART 링크)는 서버가 이미 아는 값이라 모델에게는 `[1]`, `[2]`처럼
+  번호로만 인용하게 하고, 번호 → 실제 출처 매핑은 `AnswerService`가 결정적으로
+  수행한다. 모델이 URL 텍스트를 직접 생성하게 하면 그 자체가 환각 지점이 되기
+  때문. DART 원문 링크는 `https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rceptNo}`
+  형식(웹 검색으로 실제 URL 규칙임을 확인 후 사용). 모델은 `gpt-4o-mini`(비용
+  대비 검증에 충분한 품질부터 시작, 품질 부족 확인되면 상위 모델로 교체하는
+  전략 - `application.yml`의 `rag.chat.model`로 설정값화), top-k=10은 기존
+  하이브리드 검색 검증 때 쓰던 값 그대로(비용 차이가 미미해 품질 우선 판단).
+
+  실제 LLM 호출로 2가지 핵심 시나리오를 검증했다(`AnswerServiceManualIT`,
+  비용이 들어 CI 대상이 아닌 수동 검증용 - 회귀 확인 가치가 있어 계속 보존):
+  - **컨텍스트에 답이 있는 질문** — "한국투자증권이 발행한 주가연계파생결합사채
+    상품은 어떤 내용인가요?" → 정확한 답변을 생성하고 `[3][4]`로 인용, 실제
+    노출된 출처도 정확히 그 2건(투자설명서·일괄신고추가서류)뿐이었다 - 인용
+    번호와 실제 출처 매핑이 설계대로 일치함을 확인.
+  - **컨텍스트에 답이 없는 질문** — "테슬라의 최근 자율주행 기술 개발 현황은
+    어떤가요?"(DART/한국 공시와 무관) → 지어내지 않고 정확히 "제공된 공시
+    자료에서는 이 질문에 답할 수 있는 내용을 찾지 못했습니다"라고 답변, 출처
+    0건. **CLAUDE.md의 핵심 가치("사실에 근거해 답변 생성, 환각 제어")가 실제
+    동작으로 증명된 지점**.
+  - 비용: 2건 합계 입력 10,563토큰 / 출력 181토큰 → **$0.0017**(예산 $4.93 대비
+    무시할 수준).
+
+  구현 중 겪은 별개 이슈(OpenAI restricted API key 스코프 부족으로 채팅 완성이
+  401로 막혔던 것, 과금 없이 해결)는 아래 4절에 트러블슈팅으로 별도 기록.
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
@@ -264,10 +303,13 @@ insight-stock/
 │       ├── chunking/      # ChunkingService(+Scheduler)
 │       ├── indexing/      # ChunkDocument, ChunkDocumentRepository, IndexingService(+Scheduler)
 │       ├── embedding/     # EmbeddingClient/OpenAiEmbeddingClient, TokenCounter, EmbeddingService(+Scheduler), dto/
-│       └── search/        # KeywordSearchService, VectorSearchService, RrfFuser, HybridSearchService, dto/
+│       ├── search/        # KeywordSearchService, VectorSearchService, RrfFuser, HybridSearchService, dto/
+│       └── rag/           # PromptBuilder, ChatCompletionClient/OpenAiChatCompletionClient,
+│                          # CitationParser, AnswerService, dto/
 │   └── src/main/resources/
 │       ├── application.yml
 │       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
+│       ├── prompts/rag-system-prompt.txt  # RAG system prompt (코드와 분리, 튜닝 시 재컴파일 불필요)
 │       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql
 ├── tests/exploration/     # DART API 탐색용 파이썬 스크립트 (참고용, 자동화 테스트 아님)
 ├── .env / .env.example    # DART_API_KEY, POSTGRES_USER, POSTGRES_PASSWORD
@@ -355,25 +397,39 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
      안 씀 — 인덱스 결함이 아니라 테이블이 작을 때의 정상적인 플래너 동작(데이터가
      늘어나면 자연히 선택될 것).
 
-   다음 단계는 RAG 답변 생성(LLM에 Top-K 청크를 근거로 넘겨 출처 명시 답변 생성)과
-   이를 노출할 Controller/API 계층.
-5. **[다음 세션] RAG 답변 생성** — `HybridSearchService`의 Top-K 청크를 컨텍스트로
-   LLM에 주입해 출처 명시 답변을 생성하는 단계(CLAUDE.md의 핵심 목표 - 금융
-   도메인 환각 제어). 진행 순서(안):
-   1. `HybridSearchService.search()` 결과(`RankedChunk` 리스트)를 프롬프트
-      컨텍스트로 조립.
-   2. **프롬프트 설계** — 컨텍스트 밖 정보를 지어내지 않도록 강제하는 지시문,
-      컨텍스트 안에 답이 없으면 "모른다"고 답하게 하는 지시문을 명시적으로 넣을 것.
-   3. **출처 표시 로직** — `RankedChunk`의 공시(`rcept_no`)를 DART 원문 링크로
-      변환해 답변과 같이 노출.
-   4. **모델 선택 및 비용 추정을 먼저 한다** — 남은 예산 $4.93. 답변 생성(채팅
-      완성)은 임베딩보다 토큰당 단가가 훨씬 비싸고 입력+출력 모두 과금되므로,
-      임베딩 때와 같은 원칙(비용 실측 → 사용자 승인 → 진행)을 그대로 따를 것 -
-      절대 먼저 대량으로 돌리지 말 것.
-   5. **소량 테스트 후 확인받고 진행** — 질의 몇 개로 먼저 답변을 생성해보고
-      품질/출처 표시가 의도대로 나오는지 확인받은 다음에 확장.
+5. **[완료] RAG 답변 생성** — `rag/` 패키지(`PromptBuilder`/
+   `ChatCompletionClient`+`OpenAiChatCompletionClient`/`CitationParser`/
+   `AnswerService`)로 검색→프롬프트→LLM→출처 후처리 흐름을 구현했다. 모델은
+   `gpt-4o-mini`, top-k=10, system prompt는 별도 리소스 파일로 분리. 실 LLM
+   호출로 "답이 있는 질문"(정확한 답변 + 인용 매핑 일치)과 "답이 없는
+   질문"(환각 없이 "찾지 못했습니다")을 모두 확인 - CLAUDE.md 핵심 가치(환각
+   제어)가 실동작으로 증명됨. 비용 2건 합계 $0.0017. 상세는 위 1절 참고,
+   `AnswerServiceManualIT`에 회귀 검증용으로 두 시나리오 그대로 보존.
+6. **[다음 세션] Controller/API 계층** — `AnswerService.answer(query)`를 HTTP로
+   노출하는 REST 엔드포인트(예: `POST /api/answers`)를 추가하는 단계. 이후
+   Next.js 프론트엔드(`frontend/`, 아직 미착수)에서 이 API를 호출하는 흐름으로
+   이어질 예정.
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
+
+- **[해결됨] OpenAI restricted API key에 채팅 완성 스코프가 없어 401 발생** —
+  RAG 답변 생성(`ChatCompletionClient`) 구현 후 첫 실 호출 테스트에서 전부
+  `401 Unauthorized`로 실패했다. `curl`로 직접 원인을 확인한 결과 임베딩 때부터
+  써온 `OPENAI_API_KEY`가 **restricted API key**(스코프 제한 키)였고, `embeddings`
+  스코프만 있어 그동안 임베딩 파이프라인(5,201건)은 문제없이 동작했지만 이번에
+  처음 쓰는 채팅 완성 API에는 권한이 없었다 — 에러 메시지가 명확히 알려줬다:
+  `"Missing scopes: model.request. ... if you're using a restricted API key,
+  that it has the necessary scopes."` 인증 단계에서 거부된 요청이라 **과금은
+  전혀 없었다**(모델이 토큰을 생성하지 않음). OpenAI 플랫폼에서 해당 키의
+  스코프에 "Chat completions"를 추가로 활성화해 해결했다.
+
+  부수적으로 발견한 점: 스코프를 수정한 직후 한동안 요청의 70~80%가 여전히
+  같은 401로 실패하고 나머지만 200이 성공하는 **불안정한 전파 지연**이 있었다
+  (같은 키/같은 요청을 반복 `curl`로 호출해도 성공/실패가 뒤섞임 — OpenAI 쪽
+  권한 캐시가 엣지 노드 전체에 즉시 반영되지 않는 것으로 추정). 수 분간
+  재시도(실패해도 무료)하니 안정적으로 200이 나왔다. 나중에 API 키 스코프를
+  바꾼 직후 비슷한 401을 보면, 코드를 의심하기 전에 "방금 바꾼 권한이 아직
+  전파 중일 수 있다"는 걸 먼저 고려할 것.
 
 - **[해결됨] 정규식 폴백 경로가 청킹 구조 정보를 통째로 잃던 문제** — 처음엔
   마커 유무로 전략을 분기(`chunk_source`)하는 우회책으로 대응했었는데, 나중에
@@ -477,6 +533,13 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
   끝났음 - 다시 조사할 필요 없이 `HybridSearchService.search(query, topK)`를
   그대로 갖다 쓰면 됨. `HybridSearchManualIT`(수동 검증용)에 실제 질의 예시와
   결과 출력 포맷이 남아있으니 참고 가능.
-- **다음 작업은 RAG 답변 생성**(3절 5번 참고) - OpenAI 크레딧 잔액 $4.93 남음.
-  답변 생성은 임베딩보다 비싸므로 비용 추정 → 승인 → 소량 테스트 순서를 반드시
-  지킬 것(임베딩 때와 동일한 원칙, 3절 3번 참고).
+- RAG 답변 생성(`rag/` 패키지 - `PromptBuilder`/`ChatCompletionClient`/
+  `CitationParser`/`AnswerService`)도 완성되어 실 LLM 호출로 검증까지 끝났음 -
+  `AnswerService.answer(query)`를 그대로 갖다 쓰면 됨. `AnswerServiceManualIT`
+  (수동 검증용, 비용이 들어 CI 대상 아님)에 "답이 있는 질문"/"답이 없는 질문"
+  두 시나리오가 회귀 검증용으로 보존돼 있으니 참고 가능. OpenAI API 키는
+  restricted key라면 Chat completions 스코프가 켜져 있어야 함(4절 트러블슈팅
+  참고).
+- **다음 작업은 Controller/API 계층**(3절 6번 참고) - `AnswerService`를 REST
+  엔드포인트로 노출한 뒤 Next.js 프론트엔드 연동으로 이어간다. OpenAI 크레딧
+  잔액은 이번 세션 검증 비용($0.0017)을 반영해 약 $4.93 그대로 유효.
