@@ -55,7 +55,7 @@ public class AnswerService {
         List<RankedChunk> chunks = hybridSearchService.search(query, topK);
         if (chunks.isEmpty()) {
             log.info("검색 결과 없음 - LLM 호출 없이 응답: query=\"{}\"", query);
-            return new AnswerResponse(NO_ANSWER_MESSAGE, List.of());
+            return new AnswerResponse(query, NO_ANSWER_MESSAGE, List.of());
         }
 
         RagPrompt prompt = promptBuilder.build(query, chunks);
@@ -72,7 +72,7 @@ public class AnswerService {
                 .map(number -> toSourceRef(chunks.get(number - 1)))
                 .toList();
 
-        return new AnswerResponse(result.content(), sources);
+        return new AnswerResponse(query, result.content(), sources);
     }
 
     private SourceRef toSourceRef(RankedChunk chunk) {

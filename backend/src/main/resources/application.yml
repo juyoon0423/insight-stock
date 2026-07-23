@@ -79,6 +79,10 @@ hybrid-search:
   # RRF 상수(Cormack et al., 2009 권장값 - 순위 차이의 영향을 완만하게 만듦).
   rrf-k: 60
 
+cors:
+  # Next.js 개발 서버 기본 포트. 배포 시 실제 프론트 도메인으로 교체(콤마로 여러 개 가능).
+  allowed-origins: http://localhost:3000
+
 rag:
   chat:
     api:
