@@ -1,10 +1,16 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useState } from "react";
 import QuestionForm from "@/components/QuestionForm";
 import ResultPanel, { type ResultStatus } from "@/components/ResultPanel";
 import { ApiError, askAnswer } from "@/lib/api";
+import { mockAskAnswer } from "@/lib/mockAnswers";
 import type { AnswerResponse } from "@/lib/types";
+
+// 화면 작업 중 실제 /answers 호출(약 $0.0015)을 없애기 위한 토글. .env.local에서만
+// true로 켜고, .env.local.example 기본값은 false(실수로 목업인 채 배포되는 것 방지).
+const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK_ANSWERS === "true";
 
 const ERROR_MESSAGES: Record<string, string> = {
   VALIDATION_ERROR: "질문을 다시 확인해주세요.",
@@ -24,7 +30,7 @@ export default function Home() {
     setStatus("loading");
     setErrorMessage(null);
     try {
-      const result = await askAnswer({ query });
+      const result = USE_MOCK ? await mockAskAnswer(query) : await askAnswer({ query });
       setData(result);
       setStatus("success");
     } catch (e) {
@@ -45,6 +51,17 @@ export default function Home() {
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
             DART 공시에 근거해 답변합니다 — 모든 답변에는 출처가 함께 표시됩니다.
           </p>
+          {USE_MOCK && (
+            <p className="mt-2 inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+              목업 모드 — 예시 질문 3개만 정상 응답합니다
+            </p>
+          )}
+          <Link
+            href="/search"
+            className="mt-3 block text-xs text-zinc-400 transition-colors hover:text-zinc-600 dark:hover:text-zinc-300"
+          >
+            🔍 하이브리드 검색이 어떻게 순위를 매기는지 보기
+          </Link>
         </header>
 
         <QuestionForm onSubmit={runQuery} isLoading={status === "loading"} />

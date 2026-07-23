@@ -27,6 +27,9 @@ export interface SearchResultItem {
   rrfScore: number;
   keywordRank: number | null;
   vectorRank: number | null;
+  // content가 완전히 동일해 이 결과 하나로 합쳐진 다른 공시들의 출처(중복 제거
+  // 비활성이거나 중복이 없으면 빈 배열). dart-findings.md 2-10 참고.
+  duplicateSources: SourceRef[];
 }
 
 export interface SearchResponse {
