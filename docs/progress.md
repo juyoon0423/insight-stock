@@ -508,6 +508,74 @@
     확인 - 회색지대를 억지로 분류하지 않는다는 설계가 실제로 지켜짐.
   콘솔 에러 0건, `tsc --noEmit`/`eslint` 모두 통과.
 
+- **3단계(인증+WatchList) 착수 — 스키마 + Spring Security/JWT 인프라** — 코드
+  작성 전에 스키마/인증 방식/API 보호 범위/기존 코드 영향 4개 영역 설계안을
+  먼저 제안하고, 사용자 확인(refresh token은 Stateless, `/search`·`/answers`
+  공개 유지, `users.nickname` 추가)을 받은 뒤 한 걸음씩 구현했다.
+
+  **[완료] Flyway V3 + JPA 엔티티** — `users`(email UNIQUE/password_hash/
+  nickname)와 `watchlist`(user_id/company_id 복합 UNIQUE + 양쪽 FK `ON DELETE
+  CASCADE`, FK 컬럼은 Postgres가 자동 인덱싱 안 해줘서 인덱스 명시 추가 -
+  `disclosures.company_id`와 같은 이유). `User`/`Watchlist` 엔티티는 기존
+  `Company`/`Disclosure` 컨벤션(surrogate PK, 단방향 연관관계로 대량 컬렉션
+  로딩 방지)을 그대로 따름. psql로 스키마 확인 + 백엔드 부팅 시
+  `ddl-auto: validate` 통과로 엔티티-스키마 매핑 일치를 검증했다.
+
+  **4단계(알림) 연결 지점을 미리 고려**: `watchlist.created_at`과 기존
+  `disclosures.created_at`(TIMESTAMPTZ, 수집 시각 - `rcept_dt`는 String이라
+  비교에 안 씀)만 있으면 "관심 등록 이후 신규 공시"를 조회할 수 있어, 알림
+  발송 이력용 테이블/컬럼은 지금 안 만들었다 - `watchlist`를 알림 상태로
+  오염시키지 않기 위해서다(필요해지면 4단계에서 별도 테이블로).
+
+  **[완료] Spring Security + JWT 인증 인프라** — 자체 발급/자체 검증 JWT라
+  OAuth2 리소스 서버(외부 IdP 검증용, JWKSource 구성이 필요해 우리 케이스엔
+  과함) 대신 `jjwt`로 직접 필터를 구성하는 쪽을 택했다. HS256(대칭키 - 단일
+  백엔드라 RS256 비대칭키는 불필요한 복잡도), access 토큰 30분/refresh 토큰
+  14일. **Refresh token은 Stateless로 결정** - WatchList는 결제·개인정보가
+  없어 민감도가 낮고 즉시 무효화 요구사항도 없어서다. 필요해지면
+  `refresh_tokens` 테이블을 추가하는 확장 경로를 열어뒀다.
+
+  **화이트리스트 방식**(명시한 경로만 공개, 나머지 기본 인증 필수)을 써서
+  새 API 추가 시 보호를 깜빡하는 사고를 구조적으로 막는다. 공개 경로:
+  `GET /api/v1/search`·`POST /api/v1/answers`(포트폴리오 핵심 가치를 로그인
+  벽 없이 체험 가능해야 한다는 판단 - 발표 시연에서 매번 로그인하는 번거로움도
+  고려), `/api/v1/auth/**`, `/actuator/health`, CORS 프리플라이트(OPTIONS).
+
+  `WebConfig`를 `CorsConfigurationSource` 빈으로 재구성해 Security의 `cors()`가
+  기존 CORS 설정을 그대로 재사용하도록 했다(`WebMvcConfigurer` 방식과 병행하면
+  두 경로가 중복/충돌할 수 있어 하나로 단일화). `GlobalExceptionHandler`와
+  Security 필터(인증/인가 예외 - 컨트롤러 밖이라 `@RestControllerAdvice`가 못
+  잡음)가 같은 `ProblemDetail`+`errorCode` 형식을 쓰도록 `api/ProblemDetails.java`
+  로 생성 로직을 공통화했다.
+
+  **회귀 확인**(Spring Security 도입이 기존 API를 막지 않는지가 가장 중요한
+  검증 포인트였음, curl 전수 확인):
+  - 인증 없이 `GET /api/v1/search`, `GET /actuator/health` → **200**
+  - CORS 프리플라이트 `OPTIONS /api/v1/search`, `/api/v1/answers` → **200** +
+    `Access-Control-Allow-Origin` 정상
+  - 미구현 경로 `GET /api/v1/watchlist`(인증 없음) → **401** `AUTH_REQUIRED`
+    - 화이트리스트가 기본적으로 막는다는 반증
+  - `POST /api/v1/answers` 빈 body(인증 없음, 비용 0) → **400**
+    `VALIDATION_ERROR`(401이 아님 - Security가 안 막고 컨트롤러 검증까지 통과
+    한다는 뜻, 실제 LLM 호출 없이 "보호 안 됨"만 확인)
+  - `./gradlew test` 전체 스위트 **BUILD SUCCESSFUL**(`GlobalExceptionHandler`
+    리팩터링 회귀 없음)
+  - 프론트(Playwright로 실제 구동): `/search`, `/`(메인, 목업 모드) 모두 콘솔
+    에러 0건, 2단계에서 만든 매치 패턴 배지/요약 통계까지 정상 동작
+
+  **트러블슈팅 - 필터 단계 401 응답의 한글이 깨지던 문제**: 첫 회귀 확인에서
+  401 응답의 `detail`이 `"???? ?????."`로 나왔다. 컨트롤러에서 던진 예외는
+  Spring이 자동으로 UTF-8 처리해주지만, Security 필터는 `DispatcherServlet`
+  이전 단계라 그 혜택을 못 받고 `response.getWriter()`가 컨테이너 기본
+  인코딩(ISO-8859-1)을 썼던 게 원인. `ProblemDetails.write()`를 Jackson이
+  UTF-8로 직접 쓰는 `OutputStream` 방식으로 바꿔 해결, 재확인 결과
+  `"로그인이 필요합니다."`로 정상 표시됨을 확인했다. **필터 레벨에서 응답을
+  직접 만들 때는 컨트롤러와 인코딩 처리 경로가 다르다는 걸 기억할 것.**
+
+  `JWT_SECRET`은 `.env`에 키 이름만 추가(`.env.example`도 동일), 실제 값은
+  사용자가 직접 입력(회귀 테스트용으로는 임시 개발용 값을 생성해 사용) -
+  `git check-ignore`로 `.env`가 계속 무시됨을 재확인했다.
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
@@ -538,7 +606,8 @@ insight-stock/
 ├── backend/               # Spring Boot 프로젝트
 │   └── src/main/java/com/insightstock/insightstock/
 │       ├── InsightStockApplication.java
-│       ├── domain/        # Company, Disclosure, Chunk, DocumentStatus, ChunkType, ChunkSource, support/VectorType
+│       ├── domain/        # Company, Disclosure, Chunk, DocumentStatus, ChunkType, ChunkSource,
+│       │                  # support/VectorType, User, Watchlist
 │       ├── repository/    # CompanyRepository, DisclosureRepository, ChunkRepository
 │       ├── dart/          # DartListClient, DartDocumentClient, XmlTextExtractor, DartApiException, DartUrls, dto/
 │       ├── collector/     # DisclosureCollectorService(+Scheduler), DocumentCollectorService(+Scheduler)
@@ -549,12 +618,16 @@ insight-stock/
 │       │                  # (dto/에 RankedChunk.duplicateSources - DuplicateDisclosureRef)
 │       ├── rag/           # PromptBuilder, ChatCompletionClient/OpenAiChatCompletionClient,
 │       │                  # CitationParser, AnswerService, dto/
-│       └── api/           # AnswerController, SearchController, GlobalExceptionHandler, WebConfig, dto/
+│       ├── auth/          # SecurityConfig, JwtTokenProvider, JwtAuthenticationFilter,
+│       │                  # JwtAuthenticationEntryPoint, JwtAccessDeniedHandler, TokenType
+│       └── api/           # AnswerController, SearchController, GlobalExceptionHandler,
+│                          # WebConfig, ProblemDetails, dto/
 │   └── src/main/resources/
 │       ├── application.yml
 │       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
 │       ├── prompts/rag-system-prompt.txt  # RAG system prompt (코드와 분리, 튜닝 시 재컴파일 불필요)
-│       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql
+│       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql,
+│                          # V3__add_users_and_watchlist.sql
 ├── frontend/               # Next.js 16(App Router, TypeScript, Tailwind CSS)
 │   ├── app/                # page.tsx(메인 화면), search/(2단계 RRF 시각화 화면)
 │   ├── components/         # QuestionForm, AnswerText, SourceCard, ResultPanel,
@@ -567,7 +640,7 @@ insight-stock/
 │   ├── .env.local          # NEXT_PUBLIC_API_BASE_URL, NEXT_PUBLIC_USE_MOCK_ANSWERS (git 제외)
 │   └── .env.local.example  # 커밋 대상 (frontend/.gitignore에 !.env*.example 예외 추가함)
 ├── tests/exploration/     # DART API 탐색용 파이썬 스크립트 (참고용, 자동화 테스트 아님)
-├── .env / .env.example    # DART_API_KEY, POSTGRES_USER, POSTGRES_PASSWORD
+├── .env / .env.example    # DART_API_KEY, POSTGRES_USER, POSTGRES_PASSWORD, OPENAI_API_KEY, JWT_SECRET
 └── requirements.txt       # tests/exploration/ 실행용 파이썬 의존성
 ```
 
@@ -773,11 +846,41 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
      애매한 케이스는 배지를 안 붙이도록 했고, 예시 칩도 배지 데모 효과가
      가장 큰 3개(전환사채/GRT/파라택시스코리아)로 교체했다. 상세는 위 1절
      마지막 항목 참고.
-   - **[그 이후 - 3단계, 아직 착수 안 함]** 인증(JWT) + WatchList — 백엔드
-     API부터 설계.
+   - **[완료 - 3단계로 이어짐]** 인증(JWT) + WatchList 설계·1~2단계 구현
+     완료. 상세는 아래 10번 항목 참고.
+
+10. **[진행 중] 3단계 — 인증(JWT) + WatchList** — 설계안(스키마/JWT 방식/
+    API 보호 범위/기존 코드 영향)을 먼저 제안하고 사용자 확인(refresh token
+    Stateless, `/search`·`/answers` 공개 유지, `users.nickname` 추가)을
+    받은 뒤 한 걸음씩 구현 중. 상세는 위 1절 마지막 항목 참고.
+    - **[완료]** Flyway V3(`users`/`watchlist`) + JPA 엔티티, psql +
+      `ddl-auto: validate`로 검증.
+    - **[완료]** Spring Security + JWT 인프라(화이트리스트 방식, HS256,
+      access 30분/refresh 14일 Stateless). 회귀 확인 전부 통과(curl +
+      `./gradlew test` + 프론트 Playwright). 필터 단계 응답 한글 인코딩
+      버그 발견/수정.
+    - **[내일 할 일 - 3단계 계속]**
+      1. **회원가입/로그인/토큰 갱신 API** — `POST /api/v1/auth/signup`,
+         `/login`, `/refresh`. BCrypt 해시, 가입과 동시에 토큰 발급.
+      2. **회사 검색 API**(자동완성용) — `GET /api/v1/companies?q=` -
+         `corp_name ILIKE` 부분일치, 공개 엔드포인트.
+      3. **WatchList CRUD API** — `POST`/`GET`/`DELETE
+         /api/v1/watchlist`, 인증 필수 - 토큰 없이 401 / 토큰 있으면
+         정상 동작까지 확인.
+      4. (그다음) 프론트 — 로그인/회원가입 화면 + WatchList 화면.
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
+- **[해결됨] Spring Security 필터 단계 응답에서 한글이 ISO-8859-1로 깨짐** —
+  JWT 인증 도입 후 첫 회귀 확인에서 401 응답의 `detail`이
+  `"???? ?????."`로 나왔다. 컨트롤러에서 던진 예외는 Spring이 자동으로
+  UTF-8 처리해주지만, Security 필터는 `DispatcherServlet` 이전 단계라 그
+  혜택을 못 받고 `response.getWriter()`가 컨테이너 기본 인코딩
+  (ISO-8859-1)을 썼던 게 원인. `api/ProblemDetails.write()`를 Jackson이
+  UTF-8로 직접 쓰는 `OutputStream`(`objectMapper.writeValue(response.
+  getOutputStream(), ...)`) 방식으로 바꿔 해결. **필터/인터셉터 레벨에서
+  응답을 직접 만들 때는 컨트롤러와 인코딩 처리 경로가 다르다는 걸 기억할
+  것** — `getWriter()`류를 다시 쓰게 되면 같은 함정이 재현될 수 있음.
 - **[해결됨] OpenAI restricted API key에 채팅 완성 스코프가 없어 401 발생** —
   RAG 답변 생성(`ChatCompletionClient`) 구현 후 첫 실 호출 테스트에서 전부
   `401 Unauthorized`로 실패했다. `curl`로 직접 원인을 확인한 결과 임베딩 때부터
@@ -937,11 +1040,31 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
   양쪽에 자동 적용됨. 다시 조사할 필요 없음.
 - **유료 API 테스트 분리도 완료** - `./gradlew test`는 항상 비용 0(수동 검증은
   `./gradlew manualTest`로만). CLAUDE.md 규칙 참고.
+- **3단계(인증+WatchList) 진행 중** - 스키마(`users`/`watchlist`, Flyway V3)와
+  Spring Security + JWT 인프라(화이트리스트 방식)까지 완성, 회귀 확인 전부
+  통과. `auth/` 패키지(`SecurityConfig`/`JwtTokenProvider`/
+  `JwtAuthenticationFilter`/`JwtAuthenticationEntryPoint`/
+  `JwtAccessDeniedHandler`)를 다시 조사할 필요 없이 그대로 갖다 쓰면 됨.
+  아직 없는 것: 회원가입/로그인/토큰 갱신 API, 회사 검색 API, WatchList
+  API 전부 - `JwtTokenProvider`가 토큰을 검증만 하고 아직 아무도 발급하지
+  않는 상태(로그인 API가 없으므로). 상세는 위 3절 10번 참고.
 
-### 다음 세션 시작점 — 3단계 착수
+### 다음 세션 시작점 — 3단계 계속(회원가입/로그인/토큰 갱신 API)
 
-**1단계(메인 페이지)와 2단계(`/search` RRF 시각화)가 모두 완성됐다.** 다음은
-3단계 — 인증(JWT) + WatchList, 백엔드 API 설계부터 시작.
+**1단계(메인 페이지)와 2단계(`/search` RRF 시각화)는 완성**, 3단계(인증+
+WatchList)는 스키마 + Security/JWT 인프라까지 완료된 상태에서 이어감. 다음
+할 일(위 3절 10번과 동일):
+
+1. `POST /api/v1/auth/signup`/`/login`/`/refresh` - BCrypt 해시, 가입과
+   동시에 토큰 발급. curl로 실제 토큰 발급 확인.
+2. `GET /api/v1/companies?q=` - 회사 자동완성, `corp_name ILIKE` 부분일치.
+3. WatchList CRUD (`POST`/`GET`/`DELETE /api/v1/watchlist`) - 토큰 없이
+   401, 토큰 있으면 정상 동작까지 확인.
+4. (그다음) 프론트 - 로그인/회원가입 화면 + WatchList 화면.
+
+`JWT_SECRET`은 `.env`에 값이 채워져 있어야 백엔드가 뜬다(회귀 테스트 때
+임시 개발용 값을 넣어둠 - 실제 값으로 교체하고 싶으면 `.env`의
+`JWT_SECRET=` 줄만 바꾸면 됨, `.env.example`엔 키 이름만 있음).
 
 브라우저에서 세션 마지막에 확인한 화면은 `/search`(카드+듀얼마커+배지+상단
 요약)까지이고, 개발 서버는 세션 종료 시 둘 다 내려둠(`docker compose` 인프라는
