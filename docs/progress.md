@@ -1,6 +1,6 @@
 # 진행 상황 (Progress)
 
-마지막 업데이트: 2026-07-23
+마지막 업데이트: 2026-07-24
 
 다음 세션 시작 시 이 문서부터 읽으면 지금까지 뭘 했고 다음에 뭘 할지 바로 파악할 수 있다.
 
@@ -457,6 +457,57 @@
   확인했고, CLAUDE.md에 "유료 외부 API를 호출하는 테스트는 기본 test에서
   제외한다"는 규칙을 추가해 재발을 방지했다.
 
+- **2단계 화면 마무리 — 매치 패턴 배지 + 상단 요약 통계** — 코드를 짜기 전에
+  `/search`에 실 질의 8개(topK=40, 비용 0)를 던져 "한쪽 검색만 찾아낸 청크"
+  패턴이 실제로 얼마나 나타나는지부터 조사했다(전체 80슬롯 중 벡터단독 11 /
+  키워드단독 16 / 합의 14 / 애매한 나머지 39). 이 조사로 임계값을 보수적으로
+  잡기로 결정했다 - 강함=5위 이내, 약함=20위 밖, 그 사이 애매한 경우는
+  **배지를 안 붙인다**(배지가 카드 대부분에 붙으면 오히려 눈에 안 띄고,
+  경계선 오분류로 신뢰도가 떨어진다는 판단 - 듀얼 마커가 어차피 두 순위를
+  그대로 보여주니 정보 손실도 없음).
+
+  `lib/matchPattern.ts`(순수 함수 `classifyMatchPattern`/`summarizeMatchPatterns`/
+  `describeMatchPatternSummary`, `rankScale.ts`와 같은 패턴)로 로직을 분리하고,
+  `components/search/MatchPatternBadge.tsx`(카드별 배지 - 키워드=파랑/의미=주황,
+  듀얼 마커와 색 통일, 합의는 두 색 점을 겹쳐 표시)와
+  `components/search/MatchPatternSummary.tsx`(페이지 상단 요약 - 카드와 같은
+  `classifyMatchPattern`을 재사용해 숫자가 항상 일치하도록 함)를 구현했다.
+  요약 문구는 데이터에 따라 자연스럽게 바뀌게 만들었다 - 합의 0건이면서
+  전부 편중이면 "두 검색 결과가 하나도 겹치지 않았습니다", 편중 0건이면
+  "편중된 결과가 하나도 없었습니다"처럼 극단적인 케이스를 강조하고, 그 외에는
+  일반형 문장으로 폴백.
+
+  **원래 계획(안 B, 상위 5개 범프 차트)을 상단 요약 통계로 대체했다** - 세션
+  중 "카드 배지보다 전체 그림이 한눈에 들어오는 게 낫지 않을까"라는 제안이
+  나왔고, `classifyMatchPattern`을 그대로 재사용할 수 있어 구현 비용도 낮아
+  범프 차트 대신 채택하기로 사용자와 합의했다. 범프 차트는 보류(필요해지면
+  `lib/rankScale.ts`를 재사용해 나중에 추가 가능).
+
+  예시 질문 칩도 이번 조사 결과로 다시 골랐다(`전환사채 발행조건과
+  전환가액은?`/`GRT의 유상증자 결정 내용은?`/`파라택시스코리아의 합병 결정
+  내용은?`) - 기존 신영증권/한국투자증권 ELS는 새 임계값 기준 배지가 7~9/10이
+  "배지 없음"이라 데모 효과가 약해 제외했다. 파라택시스코리아는 메인 페이지
+  예시 칩과 질문 텍스트가 겹치는데, 두 페이지의 `EXAMPLE_QUERIES`는 서로 다른
+  파일의 독립 상수라 실제로는 무관하고(메인은 `POST /answers` 유료, `/search`는
+  `GET /search` 무료), "메인에서 답변을 보고 `/search`에서 같은 질문의 검색
+  과정을 보는" 자연스러운 연결이라 의도적으로 재사용을 유지했다.
+
+  브라우저에서 Playwright로 실제 구동해 검증했다(이 프로젝트에 `chromium-cli`나
+  프로젝트 전용 실행 스킬이 없어 `npx playwright install chromium`으로 임시
+  설치해 사용 - 시스템 전역 설치가 아니라 프로젝트 로컬/캐시 범위라 CLAUDE.md의
+  "전역 시스템 변경 사전 확인" 규칙과는 무관). 칩 3개를 각각 클릭해 배지
+  구성과 요약 문구를 전수 확인했다:
+  - **전환사채**: top-10 전부 배지(키워드단독 5 + 의미단독 5, 합의 0) - 요약
+    문구 "두 검색 결과가 하나도 겹치지 않았습니다" - 가장 극적인 대비 사례.
+  - **GRT**: 키워드단독 3 + 합의 1 - 요약 "키워드 검색이 3건을 단독으로
+    찾아냈고, 1건은 양쪽 검색이 일치했습니다" - 키워드 1위인 청크가 실제로는
+    GRT와 무관한 회사(키움증권)라는 반대 방향 증명.
+  - **파라택시스코리아**: 합의 5 + 편중 0 - 요약 "편중된 결과가 하나도
+    없었습니다" - 위 두 사례와 정확히 대비되는 기준점.
+  - 신영증권(`키워드 #3`/`벡터 #18`)처럼 애매한 순위엔 배지가 안 붙는 것도
+    확인 - 회색지대를 억지로 분류하지 않는다는 설계가 실제로 지켜짐.
+  콘솔 에러 0건, `tsc --noEmit`/`eslint` 모두 통과.
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
@@ -507,9 +558,11 @@ insight-stock/
 ├── frontend/               # Next.js 16(App Router, TypeScript, Tailwind CSS)
 │   ├── app/                # page.tsx(메인 화면), search/(2단계 RRF 시각화 화면)
 │   ├── components/         # QuestionForm, AnswerText, SourceCard, ResultPanel,
-│   │                       # search/(SearchQueryForm, RankedResultCard, DualRankMarker, SearchResultList)
+│   │                       # search/(SearchQueryForm, RankedResultCard, DualRankMarker,
+│   │                       # SearchResultList, MatchPatternBadge, MatchPatternSummary)
 │   ├── lib/                # api.ts(search()/askAnswer()/ApiError), types.ts(백엔드 DTO와 1:1),
 │   │                       # citations.ts(인용 번호 재매핑), rankScale.ts(순위→트랙 위치 변환),
+│   │                       # matchPattern.ts(배지 분류/요약 문구 순수 함수),
 │   │                       # mockAnswers.ts(NEXT_PUBLIC_USE_MOCK_ANSWERS 토글용 상시 개발 도구)
 │   ├── .env.local          # NEXT_PUBLIC_API_BASE_URL, NEXT_PUBLIC_USE_MOCK_ANSWERS (git 제외)
 │   └── .env.local.example  # 커밋 대상 (frontend/.gitignore에 !.env*.example 예외 추가함)
@@ -697,10 +750,9 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    항목 참고.
    - `/search`(RRF 순위 노출) 화면은 다음 우선순위로 논의 예정(미확정).
      인증(JWT)은 계속 MVP 범위 밖.
-9. **[진행 중] 2단계 화면 — 하이브리드 검색(RRF) 시각화** — 시각화 방식 설계안을
+9. **[완료] 2단계 화면 — 하이브리드 검색(RRF) 시각화** — 시각화 방식 설계안을
    먼저 제안·합의(안 C 카드+듀얼마커 기본 + 안 B 범프차트는 상단 요약용으로
-   나중에)한 뒤 단계적으로 구현 중. **2026-07-23 오늘 세션은 여기까지 하고
-   내일 이어감** — 다음 세션 시작점은 아래 "[내일 할 일]".
+   나중에)한 뒤 단계적으로 구현했다. 2026-07-23~24 두 세션에 걸쳐 완료.
    - **[완료]** 카드 리스트 + 듀얼 마커(`app/search/page.tsx`,
      `components/search/`), topK=20 요청 + top-10 강조/11~20위 접기, 예시
      질문 3개(합의형/편중형/혼합형) 실 API로 검증. 상세는 위 1절 참고.
@@ -714,16 +766,13 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
      `HybridSearchManualIT`에 `@Tag("manual")`을 붙이고 `build.gradle`에
      `manualTest` 태스크를 신설해, 기본 `./gradlew test`는 항상 비용 0이
      되도록 분리했다. CLAUDE.md에 재발 방지 규칙 추가. 상세는 위 1절 참고.
-   - **[내일 할 일 - 2단계 마무리]**
-     1. **"한쪽에서만 강했던 청크" 강조 로직** — 키워드 순위는 높은데 최종
-        순위에서 밀린 청크, 벡터 검색이 건져낸(키워드엔 없는) 청크 등을
-        배지로 눈에 띄게 표시. "왜 하이브리드가 필요한가"를 증명하는
-        핵심 증거라 이 프로젝트에서 중요도가 높음. 실측 근거는 이미 확보돼
-        있음(예: "GRT의 유상증자 결정 내용은?" 질의에서 키워드 1위·벡터
-        후보 50위 밖인 청크가 최종 8위로 밀린 사례, 위 1절 2단계 항목 참고).
-     2. **상위 5개 범프 차트 요약** — 발표용 임팩트를 위한 보조 시각화(안 B).
-        `/search` 페이지 상단에 top-5만 그리고, 모바일에선 숨기거나 세로
-        전환. `lib/rankScale.ts`(순위→위치 % 변환)를 그대로 재사용 가능.
+   - **[완료] 2단계 마무리 — 매치 패턴 배지 + 상단 요약 통계** — 원래
+     계획이던 "상위 5개 범프 차트"는 세션 중 상단 요약 통계로 대체하기로
+     합의해 대신 구현했다(범프 차트는 보류, 필요시 `lib/rankScale.ts` 재사용
+     가능). 배지 임계값을 실측 조사(8개 질의) 기반으로 보수적으로 잡아
+     애매한 케이스는 배지를 안 붙이도록 했고, 예시 칩도 배지 데모 효과가
+     가장 큰 3개(전환사채/GRT/파라택시스코리아)로 교체했다. 상세는 위 1절
+     마지막 항목 참고.
    - **[그 이후 - 3단계, 아직 착수 안 함]** 인증(JWT) + WatchList — 백엔드
      API부터 설계.
 
@@ -879,25 +928,22 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
   있고, 예시 질문 칩 3개(`한국투자증권 ELS`/`파라택시스코리아 합병`/`테슬라`)는
   실 DB·실 API 기준으로 검증돼 있음. `NEXT_PUBLIC_USE_MOCK_ANSWERS=true`로
   목업 모드 전환 가능(`lib/mockAnswers.ts`, 헤더에 노란 배지로 표시).
-- **2단계 화면(`/search`, RRF 시각화) 1차 구현 완료, 진행 중**(3절 9번 참고) -
-  `app/search/page.tsx` + `components/search/`로 카드+듀얼마커 시각화까지
-  완성.
+- **2단계 화면(`/search`, RRF 시각화) 완성됨**(3절 9번 참고) -
+  `app/search/page.tsx` + `components/search/`로 카드+듀얼마커 시각화, 매치
+  패턴 배지(`MatchPatternBadge`), 상단 요약 통계(`MatchPatternSummary`)까지
+  전부 완성. `lib/matchPattern.ts`를 다시 조사할 필요 없이 그대로 갖다 쓰면 됨.
 - **top-K 중복 콘텐츠 제거도 완료**(1절 참고, dart-findings.md 2-10) -
   `hybrid-search.dedup.enabled: true`로 활성화돼 있고 `/search`·`/answers`
   양쪽에 자동 적용됨. 다시 조사할 필요 없음.
 - **유료 API 테스트 분리도 완료** - `./gradlew test`는 항상 비용 0(수동 검증은
   `./gradlew manualTest`로만). CLAUDE.md 규칙 참고.
 
-### 다음 세션(내일) 시작점 — 2단계 마무리
+### 다음 세션 시작점 — 3단계 착수
 
-1. **"한쪽에서만 강했던 청크" 강조 로직** — 키워드 순위는 높은데 최종 순위에서
-   밀린 청크, 벡터만 건져낸 청크 등을 배지로 표시. "왜 하이브리드가
-   필요한가"를 보여주는 핵심 증거. 실측 근거 예시는 3절 9번 참고.
-2. **상위 5개 범프 차트 요약** — 발표용 시각화(안 B). `/search` 상단에
-   top-5만, 모바일에선 숨김/세로 전환. `lib/rankScale.ts` 재사용 가능.
-3. (그 이후) **3단계 — 인증(JWT) + WatchList**, 백엔드 API부터 설계 착수.
+**1단계(메인 페이지)와 2단계(`/search` RRF 시각화)가 모두 완성됐다.** 다음은
+3단계 — 인증(JWT) + WatchList, 백엔드 API 설계부터 시작.
 
-브라우저에서 세션 마지막에 확인한 화면은 `/search`(카드+듀얼마커)까지이고,
-개발 서버는 세션 종료 시 둘 다 내려둠(`docker compose` 인프라는 계속 켜둠) -
-다음 세션 시작 시 `cd backend && ./gradlew bootRun`, `cd frontend && npm run dev`
-로 다시 띄우면 됨.
+브라우저에서 세션 마지막에 확인한 화면은 `/search`(카드+듀얼마커+배지+상단
+요약)까지이고, 개발 서버는 세션 종료 시 둘 다 내려둠(`docker compose` 인프라는
+계속 켜둠) - 다음 세션 시작 시 `cd backend && ./gradlew bootRun`,
+`cd frontend && npm run dev`로 다시 띄우면 됨.
