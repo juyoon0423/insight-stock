@@ -4,7 +4,6 @@ import com.insightstock.insightstock.embedding.EmbeddingApiException;
 import com.insightstock.insightstock.rag.RagApiException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
-import java.net.URI;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,9 +72,6 @@ public class GlobalExceptionHandler {
     }
 
     private ProblemDetail problemDetail(HttpStatus status, String errorCode, String detail, HttpServletRequest request) {
-        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(status, detail);
-        problemDetail.setInstance(URI.create(request.getRequestURI()));
-        problemDetail.setProperty("errorCode", errorCode);
-        return problemDetail;
+        return ProblemDetails.of(status, errorCode, detail, request);
     }
 }

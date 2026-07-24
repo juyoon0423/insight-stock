@@ -90,6 +90,14 @@ cors:
   # Next.js 개발 서버 기본 포트. 배포 시 실제 프론트 도메인으로 교체(콤마로 여러 개 가능).
   allowed-origins: http://localhost:3000
 
+jwt:
+  secret: ${JWT_SECRET}
+  # 30분 - 짧게 잡아 유출 시 피해를 제한한다.
+  access-token-expiry-ms: 1800000
+  # 14일 - Stateless 방식(서버 저장 없음)이라 로그아웃 시 즉시 무효화는 안 되지만,
+  # WatchList는 민감도가 낮아 지금은 이 정도로 충분하다고 판단(3단계 설계 논의 참고).
+  refresh-token-expiry-ms: 1209600000
+
 rag:
   chat:
     api:

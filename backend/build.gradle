@@ -23,10 +23,16 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-elasticsearch'
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
+	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.flywaydb:flyway-core'
 	implementation 'org.flywaydb:flyway-database-postgresql'
 	implementation 'me.paulschwarz:spring-dotenv:5.1.0'
 	implementation 'com.pgvector:pgvector:0.1.6'
+	// 자체 발급/자체 검증 JWT - 발급자와 검증자가 같은 단일 백엔드라 OAuth2 리소스 서버
+	// 모델(외부 IdP 검증용, JWKSource 구성 필요)보다 직접 필터를 쓰는 이 조합이 더 단순하다.
+	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
 	// OpenAI 임베딩 API 호출 전, 청크별 정확한 토큰 수를 로컬에서 계산하기 위한 tiktoken(cl100k_base)
 	// 호환 라이브러리. 8,191 토큰 초과 청크를 API 호출 전에 걸러내고 chunks.token_count를 정확히 채운다.
 	implementation 'com.knuddels:jtokkit:1.1.0'
