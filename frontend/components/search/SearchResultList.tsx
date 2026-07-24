@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { SearchResultItem } from "@/lib/types";
 import RankedResultCard from "./RankedResultCard";
 
-const TOP_N = 10;
+export const TOP_N = 10;
 
 interface SearchResultListProps {
   results: SearchResultItem[];

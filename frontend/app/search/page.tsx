@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useCallback, useState } from "react";
+import MatchPatternSummary from "@/components/search/MatchPatternSummary";
 import SearchQueryForm from "@/components/search/SearchQueryForm";
-import SearchResultList from "@/components/search/SearchResultList";
+import SearchResultList, { TOP_N } from "@/components/search/SearchResultList";
 import { ApiError, search } from "@/lib/api";
 import type { SearchResultItem } from "@/lib/types";
 
@@ -92,6 +93,7 @@ export default function SearchPage() {
 
         {status === "success" && results.length > 0 && (
           <div className="mt-6">
+            <MatchPatternSummary topResults={results.slice(0, TOP_N)} />
             <SearchResultList results={results} />
           </div>
         )}

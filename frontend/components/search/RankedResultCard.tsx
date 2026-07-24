@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { classifyMatchPattern } from "@/lib/matchPattern";
 import type { SearchResultItem } from "@/lib/types";
 import DualRankMarker from "./DualRankMarker";
+import MatchPatternBadge from "./MatchPatternBadge";
 
 interface RankedResultCardProps {
   item: SearchResultItem;
@@ -18,6 +20,7 @@ export default function RankedResultCard({ item, finalRank, compact = false }: R
   const isLong = item.content.length > PREVIEW_LENGTH;
   const displayedContent = expanded || !isLong ? item.content : `${item.content.slice(0, PREVIEW_LENGTH)}…`;
   const duplicateCount = item.duplicateSources.length;
+  const matchPattern = classifyMatchPattern(item.keywordRank, item.vectorRank);
 
   return (
     <div
@@ -44,6 +47,12 @@ export default function RankedResultCard({ item, finalRank, compact = false }: R
           RRF {item.rrfScore.toFixed(4)}
         </span>
       </div>
+
+      {matchPattern && (
+        <div className="mb-2">
+          <MatchPatternBadge pattern={matchPattern} />
+        </div>
+      )}
 
       <p className="mb-3 whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">
         {displayedContent}
