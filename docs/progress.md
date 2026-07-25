@@ -1,6 +1,6 @@
 # 진행 상황 (Progress)
 
-마지막 업데이트: 2026-07-24
+마지막 업데이트: 2026-07-25
 
 다음 세션 시작 시 이 문서부터 읽으면 지금까지 뭘 했고 다음에 뭘 할지 바로 파악할 수 있다.
 
@@ -576,6 +576,225 @@
   사용자가 직접 입력(회귀 테스트용으로는 임시 개발용 값을 생성해 사용) -
   `git check-ignore`로 `.env`가 계속 무시됨을 재확인했다.
 
+- **3단계(인증+WatchList) 완성 — 회원가입/로그인/토큰 갱신 + 회사 검색 + WatchList
+  CRUD** — 코드 작성 전에 API별 요청/응답 DTO, 검증 규칙, 에러 코드를 먼저 제안하고
+  4가지 결정을 사용자와 확인한 뒤 구현했다:
+  - **토큰 갱신은 엄격 모드** — refresh는 access token 만료 시에만 사용하고, 갱신
+    시에도 access token만 재발급(refresh token 자체는 재발급하지 않음, Stateless
+    결정과 일관성 유지). 여기에 더해 `JwtAuthenticationFilter`가 refresh token을
+    일반 API 인증에 아예 못 쓰게 거부하도록 강화(`isRefreshToken()`이면 인증하지
+    않고 통과 - 탈취된 refresh token으로 access token 없이 보호된 API를 호출하는
+    경로를 원천 차단).
+  - **회사 검색은 현재 `companies` 테이블(558건) 기준 ILIKE로 진행하되 한계로
+    인식** — DART 전체 회사 목록(`corpCode.xml`) 적재는 9월 예정 데이터 규모
+    확대 때 같이 하는 게 효율적이라는 판단. **지금 WatchList는 "이미 수집한
+    558개 회사 중에서만 등록 가능"하다는 제약이 있고, `corpCode.xml`로 회사
+    목록이 전체로 확대되면 그때부터 WatchList가 원래 의도한 "미래 알림 예약"
+    (아직 공시가 없는 회사도 미리 등록해두고 나중에 알림받기)이라는 의미를
+    온전히 갖게 된다** - 4단계(알림) 설계 시 이 제약을 먼저 해소할 필요가 있음.
+  - **삭제 인가 실패는 404** — 403은 "그 id가 존재는 한다"는 정보를 노출하므로,
+    소유권을 조건절에 녹인 `WatchlistRepository.deleteByIdAndUserId(id, userId)`
+    (Spring Data 파생 삭제 쿼리, `@Transactional` 필요)로 삭제 자체를 한 쿼리로
+    처리해 "본인 것 아님"과 "존재 안 함"을 구분 없이 0행 삭제 → 404로 통일.
+  - **이메일 정규화는 소문자화+trim만** — local part(dot/plus 등)까지 건드리면
+    실제로 다른 주소를 같다고 오판할 위험이 있어 보수적으로 여기까지만
+    (`AuthService.normalizeEmail()`).
+
+  패키지는 기존 컨벤션 그대로 확장: `repository/`에 `UserRepository`/
+  `WatchlistRepository` 추가, 비즈니스 로직은 `auth/AuthService`(+3개 예외:
+  `DuplicateEmailException`/`InvalidCredentialsException`/
+  `InvalidRefreshTokenException`)와 신규 `watchlist/WatchlistService`(+3개 예외:
+  `CompanyNotFoundException`/`DuplicateWatchlistException`/
+  `WatchlistNotFoundException`)로, 컨트롤러는 `api/AuthController`/
+  `api/CompanyController`/`api/WatchlistController`로, DTO는 전부 `api/dto/`에
+  배치(`AnswerRequest`가 이미 그 자리에 있는 패턴 그대로). `GlobalExceptionHandler`에
+  6개 예외 핸들러를 추가해 전부 같은 `ProblemDetail`+`errorCode` 형식을 따르게 했다.
+
+  **구현 중 발견한 버그** — curl로 앞뒤 공백이 섞인 이메일(`"  Test.User@Example.com  "`)로
+  가입을 시도했더니 400이 났다. 원인은 실행 순서 문제: Bean Validation의 `@Email`이
+  `SignupRequest`/`LoginRequest` record가 생성된 직후(서비스 계층 진입 전)에 필드
+  값을 그대로 검사하는데, `AuthService.normalizeEmail()`의 trim은 그보다 나중인
+  서비스 계층에서 실행된다 - 앞뒤 공백이 있으면 정규화되기도 전에 `@Email` 정규식이
+  막아버린 것. record의 compact constructor에서 trim을 먼저 적용해 검증 시점에
+  이미 trim된 값을 보게 해서 해결했다. **DTO 필드를 정규화해야 하면 서비스
+  계층만으로는 부족하고, Bean Validation이 보는 시점(DTO 생성 시점)에 이미
+  정규화가 끝나 있어야 한다는 걸 실측으로 확인한 사례.**
+
+  전부 curl로 실제 동작을 확인했다(회원가입/로그인은 유료 API가 아니라 마음껏
+  반복 검증):
+  - **인증**: 가입 성공(공백/대소문자 섞인 이메일이 정규화되어 저장됨 확인) →
+    토큰 발급, 같은 이메일 다른 대소문자로 재가입 시도 → 409
+    `EMAIL_ALREADY_EXISTS`, 로그인 성공(정규화 전 형태로 시도해도 통과),
+    틀린 비밀번호/존재하지 않는 이메일 모두 동일하게 401
+    `INVALID_CREDENTIALS`(계정 존재 여부 비노출), refresh 정상 동작(access
+    token만 재발급 확인), access token으로 refresh 시도 → 401
+    `INVALID_REFRESH_TOKEN`, refresh token으로 보호된 API 호출 시도 → 401
+    `AUTH_REQUIRED`(엄격 모드 필터가 실제로 막는 것 확인).
+  - **회사 검색**: "삼성"(16건 - 삼성전자/삼성SDI/삼성바이오로직스 등 실제
+    DB 데이터), "전자"(5건) 검색 정상 동작, 빈 검색어/파라미터 누락 모두 400
+    `VALIDATION_ERROR`.
+  - **WatchList**: A유저가 삼성전자(companyId=4) 등록 → 201, 같은 회사 중복
+    등록 → 409 `WATCHLIST_ALREADY_EXISTS`, 존재하지 않는 companyId → 404
+    `COMPANY_NOT_FOUND`, A유저 목록 조회(1건)/B유저 목록 조회(0건) 확인.
+    **★핵심 인가 테스트**: B유저 토큰으로 A유저의 WatchList 항목 삭제 시도 →
+    정확히 404 `WATCHLIST_NOT_FOUND`(다른 사용자 항목의 존재를 노출하지 않음),
+    A유저 본인 항목 삭제 → 204, 삭제 후 재조회 시 빈 배열 확인.
+  - **회귀 확인**: `GET /api/v1/search`(신규 API 추가 후에도 정상 동작, 삼성전자
+    관련 실제 검색 결과 반환), `actuator/health`, CORS 프리플라이트(기존
+    `/api/v1/search` + 신규 보호 경로 `/api/v1/watchlist` 양쪽 모두 정상),
+    `./gradlew test` **BUILD SUCCESSFUL**(manual 태그 테스트 제외 확인 - 비용 0).
+
+  **이로써 3단계(인증+WatchList) 백엔드가 완성됐다.** 다음은 프론트엔드
+  (로그인/회원가입 화면 + WatchList 화면).
+
+- **토큰 저장 방식 결정 — "절충안"(access는 메모리, refresh는 localStorage)** —
+  프론트 구현 전에 localStorage 단독 vs httpOnly 쿠키 vs 절충안 3가지를 이
+  프로젝트의 구체적 맥락(백엔드가 이미 헤더 방식, WatchList는 결제·개인정보
+  없는 저민감도 데이터, AWS로 다른 도메인 배포 예정, 프로젝트 핵심은 RAG
+  파이프라인이지 인증 보안이 아님)에 비춰 비교한 뒤 **절충안**으로 결정했다.
+  **이 결정의 "왜"를 면접에서 그대로 쓸 수 있게 남겨둔다:**
+
+  - **httpOnly 쿠키를 안 쓴 이유** — 이미 검증 끝난 헤더 기반 필터
+    (`JwtAuthenticationFilter`)를 다시 뜯어야 하고, `csrf().disable()`의
+    근거("세션/쿠키를 안 쓰는 순수 헤더 기반 JWT")가 깨져 CSRF 방어를
+    재도입해야 한다. 특히 AWS에서 프론트/백엔드가 다른 도메인이면 쿠키는
+    `SameSite=None`이 강제되는데, 이는 `Lax`/`Strict`가 막아주던 크로스사이트
+    요청 위조를 다시 열어버린다 - "쿠키가 항상 더 안전하다"는 통념과 달리
+    **크로스도메인 배포 조건에서는 오히려 쿠키 쪽이 방어 장치(CSRF 토큰)를
+    더 필요로 하는 역설**이 있다는 게 비교 과정에서 드러난 핵심 통찰.
+    **다만 정직하게 인정할 지점도 있다: 만약 이 프로젝트가 결제 정보를
+    다루는 은행 앱이었다면 CSRF 방어 비용을 감수하고서라도 httpOnly
+    쿠키로 갔을 것이다** - 트레이드오프이지 절대적 우열이 아니라는 뜻.
+  - **localStorage 단독을 안 쓴 이유** — 백엔드 안 고치고 배포도 단순한 건
+    맞지만, 탈취 시 노출 창이 refresh token 수명(14일)까지 늘어난다.
+    XSS의 실질 위험은 "토큰이 새는가"가 아니라 "얼마나 오래 쓸 수 있는
+    토큰이 새는가"이므로, 장수명 토큰을 그대로 노출하는 게 이 방식의
+    진짜 약점이었다.
+  - **절충안을 택한 이유** — access token(30분, 짧은 수명)만 XSS에
+    노출되는 localStorage에 두지 않고 메모리(모듈 스코프 변수)에만
+    둬서, 탈취돼도 피해 창이 30분으로 제한된다. refresh token(장수명)은
+    여전히 localStorage에 있지만, 이건 이미 헤더 방식으로 검증까지
+    끝낸 백엔드를 전혀 고치지 않고, AWS 배포 시 쿠키 도메인 설계
+    같은 추가 고민도 없이 그대로 갈 수 있다는 뜻이다. WatchList가
+    저민감도 데이터라는 전제와 "인증 보안이 아니라 RAG 파이프라인에
+    엔지니어링 비중을 둔다"는 프로젝트 우선순위에 정확히 맞는 지점.
+
+  구현 아키텍처(`frontend/lib/tokenStore.ts`): React Context 대신 순수
+  모듈 스코프 스토어 + `useSyncExternalStore`를 썼다 - `lib/api.ts`의
+  fetch 로직(컴포넌트 트리 밖)도 현재 access token을 동기적으로 읽어야
+  하는데, Context는 Provider 트리 안에서만 값을 꺼낼 수 있어 이 요구와
+  안 맞는다. `applySession()`(로그인/가입 성공 시 메모리+localStorage
+  동시 갱신), `bootstrapSession()`(앱 시작 시 저장된 refresh token으로
+  조용히 access token 재발급), `authFetch()`(401 응답 시 refresh token으로
+  단 한 번만 재시도, 동시에 여러 요청이 401을 맞아도 refresh 호출은
+  하나만 나가도록 진행 중인 Promise를 공유)로 구성했다. **refresh API가
+  accessToken만 돌려주고 사용자 정보는 안 주기 때문에**, 별도 "내 정보
+  조회" API 없이 새로고침 후 닉네임을 바로 그리려고 `email`/`nickname`
+  (민감하지 않은 표시용 정보)만 refresh token과 함께 localStorage에
+  캐시해두기로 했다 - 이 캐시가 없으면 새로고침마다 잠깐 닉네임이
+  빈 상태로 보이거나 `/auth/me` 같은 새 엔드포인트가 필요했을 것.
+
+  `app/auth-test`(임시 검증 페이지, `app/search-test`와 같은 목적 -
+  실제 로그인 화면을 만들기 전에 구조 자체를 실제 백엔드로 먼저
+  검증)를 만들어 Playwright 헤드리스 브라우저로 8단계 시나리오를
+  실행해 확인했다: ①최초 진입 시 `anonymous` ②로그인 성공 시
+  `authenticated`+닉네임 표시 ③access token으로 `GET /watchlist` 성공
+  ④**새로고침 후 세션이 자동 복원되고, 이때 재발급된 access token이
+  새로고침 전과 다른 값임을 확인**(캐시 재사용이 아니라 실제로
+  refresh 왕복이 일어났다는 증거) ⑤복원된 토큰으로 다시 `GET
+  /watchlist` 성공 ⑥로그아웃 시 `anonymous`로 전환 ⑦로그아웃 후
+  `GET /watchlist` 시도 시 정확히 `401 AUTH_REQUIRED`(재시도할 refresh
+  token이 없으므로 즉시 실패) ⑧로그아웃 후 새로고침해도 `anonymous`
+  유지. 콘솔 에러 0건(7번의 의도된 401 네트워크 로그 제외).
+  `npx tsc --noEmit`/`npm run lint` 모두 통과.
+
+- **3단계 프론트엔드 — 로그인/회원가입 화면** — `app/login/page.tsx`,
+  `app/signup/page.tsx`(둘 다 기존 화면과 같은 Tailwind 톤 - `zinc` 팔레트,
+  `ResultPanel`의 에러 박스 스타일 재사용)와 `lib/authValidation.ts`
+  (백엔드 Bean Validation 규칙과 메시지까지 동일하게 맞춘 순수 검증 함수)를
+  구현했다. 로그인/가입 성공 시 `lib/api.ts`의 `login()`/`signup()`이 이미
+  내부적으로 `applySession()`을 호출하므로, 화면은 성공 후 `router.push("/")`
+  로 이동만 하면 된다.
+
+  로그인 상태를 화면에 반영하는 부분(원래 계획엔 별도 3단계로 잡혀 있었음)도
+  이번에 같이 처리했다 - 검증 기준 자체가 "가입/로그인 후 헤더에 반영되는지"라
+  화면 없이는 확인이 불가능했기 때문. `components/AuthStatusBar.tsx`(각
+  페이지 자체 헤더와는 별개로 로그인 상태만 보여주는 얇은 전역 상단 바,
+  `useSession()` 구독)를 `app/layout.tsx`에 추가해 모든 페이지에서 일관되게
+  닉네임+로그아웃(로그인 시) 또는 로그인/회원가입 링크(비로그인 시)가
+  보이게 했다.
+
+  Playwright로 실제 백엔드에 대고 검증했다: ①회원가입 폼에 형식 틀린
+  이메일/8자 미만 비밀번호/2자 미만 닉네임을 넣었을 때 세 필드 에러 메시지가
+  백엔드 메시지와 정확히 같은 문구로 표시됨 ②정상 가입 → `/`로 리다이렉트,
+  헤더에 닉네임+로그아웃 버튼 표시 ③같은 이메일로 재가입 시도 → "이미
+  가입된 이메일입니다. 로그인해주세요."(`EMAIL_ALREADY_EXISTS`), `/signup`에
+  그대로 머묾(리다이렉트 안 됨) ④로그아웃 → 헤더가 로그인/회원가입 링크로
+  전환 ⑤틀린 비밀번호로 로그인 시도 → "이메일 또는 비밀번호가 올바르지
+  않습니다."(`INVALID_CREDENTIALS`), `/login`에 그대로 머묾 ⑥올바른 비밀번호로
+  로그인 → `/`로 리다이렉트, 헤더에 닉네임 다시 표시. 콘솔 에러 0건(③·⑤의
+  의도된 409/401 네트워크 로그 제외). `npx tsc --noEmit`/`npm run lint`
+  모두 통과. 검증에 쓴 임시 페이지 `app/auth-test`는 이 화면이 실제로
+  완성됐으니 삭제(기존 `app/search-test` 삭제 사례와 같은 패턴).
+
+- **3단계 프론트엔드 — WatchList 화면(회사 검색 자동완성 → 등록/조회/삭제) —
+  3단계(인증+WatchList) 전체 완성** — `app/watchlist/page.tsx` +
+  `components/watchlist/CompanyAutocomplete.tsx`를 구현했다. 자동완성은
+  타이핑마다 요청이 나가지 않도록 300ms 디바운스를 적용했고, 이미 등록된
+  회사는 검색 후보에서 미리 제외해(`excludeCompanyIds`) 같은 회사를 다시
+  클릭해 409를 겪을 일 자체를 줄였다 - 그래도 겪을 경우(경합 등)를 대비해
+  `WATCHLIST_ALREADY_EXISTS` 등 백엔드 errorCode를 화면 메시지로 매핑하는
+  방어도 함께 뒀다(`COMPANY_NOT_FOUND`/`WATCHLIST_NOT_FOUND`/`AUTH_REQUIRED`
+  포함). 목록 조회/등록/삭제 전부 인증이 필요한 API라 `lib/api.ts`의
+  `authFetch`(401 시 refresh 자동 재시도)를 그대로 사용한다. 비로그인
+  상태에서는 "로그인이 필요합니다" 안내와 로그인 링크를 보여준다. 헤더의
+  `AuthStatusBar`에도 로그인 시에만 보이는 "관심 목록" 링크를 추가했다.
+
+  **구현 중 새 lint 규칙(`react-hooks/set-state-in-effect`, Next.js 16이
+  포함하는 React Compiler용 `eslint-plugin-react-hooks@7`)에 두 번 걸렸다** -
+  effect 본문에서 동기적으로 `setState`를 호출하면 에러가 난다. 처음엔
+  "async 함수 호출 직전에 호출되는 setState는 괜찮을 것"이라고 잘못
+  추측했는데, 실제로는 위치와 무관하게 effect 본문에서 동기적으로 호출되는
+  모든 `setState`가 걸린다는 걸 반복 실행으로 확인했다. 두 곳 모두
+  같은 원칙으로 고쳤다: **effect 본문은 async 작업을 "시작"만 하고,
+  모든 `setState`는 `.then`/`.catch`/`.finally` 콜백 안에서만 호출한다** -
+  `WatchlistPage`의 목록 조회 effect는 `useCallback` 기반 함수 호출 대신
+  `getWatchlist().then(...).catch(...).finally(...)` 체인으로, 로딩 상태는
+  effect 밖에서 초기값(`true`)으로만 표현하고 완료 시점(`.finally`)에서만
+  내리게 바꿨다. `CompanyAutocomplete`는 "검색 중" 표시를 effect가 아니라
+  `onChange` 이벤트 핸들러에서 동기적으로 켜도록(이벤트 핸들러 안의
+  `setState`는 규칙 대상이 아님) 옮기고, effect는 디바운스 타이머 등록과
+  그 콜백 안의 `setState`만 담당하게 분리했다.
+
+  **회귀 확인 중 실제 버그를 하나 발견해 고쳤다** - Playwright로 삭제
+  버튼을 눌렀는데 화면에서 항목이 안 사라졌고, 콘솔에 `DELETE
+  /api/v1/watchlist/{id}`의 CORS 프리플라이트가 `Access-Control-Allow-Origin`
+  헤더 없이 막히는 에러가 찍혔다. 원인은 `WebConfig.corsConfigurationSource()`
+  가 `/search`·`/answers`만 있던 시절 그대로 `setAllowedMethods(List.of("GET",
+  "POST"))`로 고정돼 있었던 것 - 오늘 만든 `DELETE /api/v1/watchlist/{id}`가
+  메서드 허용 목록에 없어서 브라우저가 실제 요청 자체를 막았다. curl로는 이
+  문제가 절대 안 보인다(CORS는 브라우저가 강제하는 규칙이라 curl은 애초에
+  검사하지 않음) - 오늘 앞서 있었던 curl 기반 백엔드 검증에서는 전혀 드러나지
+  않았고, Playwright로 실제 브라우저를 띄워봐서야 잡힌 문제다. `"DELETE"`를
+  허용 메서드에 추가해 해결, 재검증으로 삭제가 정상 반영됨을 확인했다.
+  **새 HTTP 메서드를 쓰는 API를 추가할 때는 CORS 허용 메서드 목록도 같이
+  업데이트해야 한다는 걸 기억할 것** - curl 검증만으로는 이 종류의 버그를
+  못 잡는다.
+
+  Playwright로 실제 백엔드에 대고 전 과정을 검증했다: ①비로그인 상태로
+  `/watchlist` 접근 → "로그인이 필요합니다" 안내+링크 ②로그인 후 헤더의
+  "관심 목록" 링크로 이동 → 빈 목록 ③"삼성" 검색(디바운스 확인 - 입력 직후엔
+  아직 요청 전, 300ms+응답 대기 후 후보 표시) ④삼성전자 클릭 → 등록,
+  목록에 표시 ⑤다시 "삼성" 검색 → 이미 등록된 삼성전자가 후보에서 제외됨
+  확인 ⑥새로고침 → 목록 그대로 유지(세션 복원 + 재조회) ⑦삭제 → 목록에서
+  사라짐(위 CORS 버그 수정 후 재검증) ⑧로그아웃 후 재접근 → 다시 안내 화면.
+  기존 화면(`/`, `/search`, `/login`, `/signup`, `/watchlist`) 5개 전부
+  콘솔 에러 0건. 백엔드 회귀: `./gradlew test` BUILD SUCCESSFUL(비용 0),
+  `GET /api/v1/search` 정상 동작, CORS 프리플라이트 GET/POST/DELETE 전부
+  통과. `npx tsc --noEmit`/`npm run lint` 모두 통과.
+
+  **이로써 3단계(인증+WatchList, 백엔드+프론트엔드) 전체가 완성됐다.**
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
@@ -608,7 +827,8 @@ insight-stock/
 │       ├── InsightStockApplication.java
 │       ├── domain/        # Company, Disclosure, Chunk, DocumentStatus, ChunkType, ChunkSource,
 │       │                  # support/VectorType, User, Watchlist
-│       ├── repository/    # CompanyRepository, DisclosureRepository, ChunkRepository
+│       ├── repository/    # CompanyRepository, DisclosureRepository, ChunkRepository,
+│       │                  # UserRepository, WatchlistRepository
 │       ├── dart/          # DartListClient, DartDocumentClient, XmlTextExtractor, DartApiException, DartUrls, dto/
 │       ├── collector/     # DisclosureCollectorService(+Scheduler), DocumentCollectorService(+Scheduler)
 │       ├── chunking/      # ChunkingService(+Scheduler)
@@ -619,9 +839,14 @@ insight-stock/
 │       ├── rag/           # PromptBuilder, ChatCompletionClient/OpenAiChatCompletionClient,
 │       │                  # CitationParser, AnswerService, dto/
 │       ├── auth/          # SecurityConfig, JwtTokenProvider, JwtAuthenticationFilter,
-│       │                  # JwtAuthenticationEntryPoint, JwtAccessDeniedHandler, TokenType
-│       └── api/           # AnswerController, SearchController, GlobalExceptionHandler,
-│                          # WebConfig, ProblemDetails, dto/
+│       │                  # JwtAuthenticationEntryPoint, JwtAccessDeniedHandler, TokenType,
+│       │                  # AuthService, dto/TokenPair, Duplicate/InvalidCredentials/
+│       │                  # InvalidRefreshTokenException
+│       ├── watchlist/     # WatchlistService, CompanyNotFound/DuplicateWatchlist/
+│       │                  # WatchlistNotFoundException
+│       └── api/           # AnswerController, SearchController, AuthController,
+│                          # CompanyController, WatchlistController,
+│                          # GlobalExceptionHandler, WebConfig, ProblemDetails, dto/
 │   └── src/main/resources/
 │       ├── application.yml
 │       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
@@ -629,11 +854,19 @@ insight-stock/
 │       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql,
 │                          # V3__add_users_and_watchlist.sql
 ├── frontend/               # Next.js 16(App Router, TypeScript, Tailwind CSS)
-│   ├── app/                # page.tsx(메인 화면), search/(2단계 RRF 시각화 화면)
+│   ├── app/                # page.tsx(메인 화면), search/(2단계 RRF 시각화 화면),
+│   │                       # login/, signup/, watchlist/(3단계 인증+WatchList 화면)
 │   ├── components/         # QuestionForm, AnswerText, SourceCard, ResultPanel,
 │   │                       # search/(SearchQueryForm, RankedResultCard, DualRankMarker,
-│   │                       # SearchResultList, MatchPatternBadge, MatchPatternSummary)
-│   ├── lib/                # api.ts(search()/askAnswer()/ApiError), types.ts(백엔드 DTO와 1:1),
+│   │                       # SearchResultList, MatchPatternBadge, MatchPatternSummary),
+│   │                       # AuthStatusBar(전역 로그인 상태 바), SessionBootstrap
+│   │                       # (앱 시작 시 조용한 refresh), watchlist/CompanyAutocomplete
+│   ├── lib/                # api.ts(search()/askAnswer()/ApiError + signup()/login()/
+│   │                       # searchCompanies()/getWatchlist()/addToWatchlist()/
+│   │                       # removeFromWatchlist()/authFetch() - 401시 자동 refresh),
+│   │                       # types.ts(백엔드 DTO와 1:1), tokenStore.ts(access 메모리+
+│   │                       # refresh localStorage 절충안 - useSyncExternalStore 스토어),
+│   │                       # authValidation.ts(백엔드 검증 규칙과 동일한 순수 함수),
 │   │                       # citations.ts(인용 번호 재매핑), rankScale.ts(순위→트랙 위치 변환),
 │   │                       # matchPattern.ts(배지 분류/요약 문구 순수 함수),
 │   │                       # mockAnswers.ts(NEXT_PUBLIC_USE_MOCK_ANSWERS 토글용 상시 개발 도구)
@@ -726,7 +959,52 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 }
 ```
 
-**에러 응답** — 두 엔드포인트 모두 실패 시 RFC 7807 `ProblemDetail` 형식 +
+**`POST /api/v1/auth/signup`** / **`POST /api/v1/auth/login`** — 회원가입/로그인,
+성공 시 access/refresh 토큰과 사용자 정보를 함께 반환(가입과 동시에 로그인 상태).
+이메일은 소문자화+trim으로 정규화되어 저장/조회됨(local part는 그대로 보존).
+
+```jsonc
+// 요청(signup만 nickname 포함)
+{ "email": "user@example.com", "password": "password123", "nickname": "juyoon" }
+// 응답 200(signup은 201)
+{
+  "accessToken": "...", "refreshToken": "...",
+  "user": { "id": 1, "email": "user@example.com", "nickname": "juyoon" }
+}
+```
+
+**`POST /api/v1/auth/refresh`** — access token 재발급 전용(엄격 모드 - refresh
+token 자체는 재발급하지 않고, access token으로는 호출 불가).
+
+```jsonc
+{ "refreshToken": "..." } // 요청
+{ "accessToken": "..." } // 응답 200
+```
+
+**`GET /api/v1/companies?q=검색어`** — WatchList 등록용 회사 자동완성(공개
+엔드포인트). `corp_name` 부분일치(대소문자 무관), 최대 20건.
+
+```jsonc
+// 응답 200
+{ "companies": [
+  { "id": 4, "corpCode": "00126380", "corpName": "삼성전자", "stockCode": "005930", "corpCls": "Y" }
+] }
+```
+
+**`POST`/`GET`/`DELETE /api/v1/watchlist`** — 인증 필수(`Authorization: Bearer
+{accessToken}`). 본인 것만 조회/삭제 가능 - 다른 사용자 항목을 삭제하려 하면
+소유권 여부와 무관하게 항상 404(존재 자체를 노출하지 않음).
+
+```jsonc
+// POST 요청
+{ "companyId": 4 }
+// POST(201)/GET(200, watchlist 배열) 공통 항목 형태
+{ "id": 1, "company": { "id": 4, "corpCode": "00126380", "corpName": "삼성전자",
+  "stockCode": "005930", "corpCls": "Y" }, "createdAt": "2026-07-25T04:40:56.317188Z" }
+// DELETE /api/v1/watchlist/{id} 성공 시 204 No Content
+```
+
+**에러 응답** — 모든 엔드포인트가 실패 시 RFC 7807 `ProblemDetail` 형식 +
 `errorCode` 확장 필드로 통일:
 
 ```jsonc
@@ -743,6 +1021,14 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 | `LLM_UNAVAILABLE` | 502 | OpenAI 채팅 완성 호출 실패 |
 | `SEARCH_UNAVAILABLE` | 502 | 검색용 쿼리 임베딩 실패 |
 | `INTERNAL_ERROR` | 500 | 그 외 예상 못 한 서버 오류 |
+| `AUTH_REQUIRED` | 401 | 인증이 필요한 API에 토큰 없이(또는 무효한 토큰으로) 접근 |
+| `FORBIDDEN` | 403 | 인증은 됐지만 권한이 없는 접근(현재는 역할 구분이 없어 실사용 경로 없음) |
+| `EMAIL_ALREADY_EXISTS` | 409 | 회원가입 시 이메일 중복 |
+| `INVALID_CREDENTIALS` | 401 | 로그인 실패(이메일/비밀번호 구분 없이 동일 처리) |
+| `INVALID_REFRESH_TOKEN` | 401 | refresh 토큰 만료/위조/access 토큰으로 refresh 시도 |
+| `COMPANY_NOT_FOUND` | 404 | WatchList 등록 시 존재하지 않는 companyId |
+| `WATCHLIST_ALREADY_EXISTS` | 409 | 이미 등록된 회사를 다시 등록 시도 |
+| `WATCHLIST_NOT_FOUND` | 404 | 본인 것이 아니거나 없는 항목 삭제 시도 |
 
 **처리 시간 실측**(실 서버 기준, 2026-07-23): `/answers` 1,917ms(정상 상태,
 첫 호출은 워밍업 포함 5,480ms) / `/search` 288ms. 지금은 동기 응답으로
@@ -849,28 +1135,68 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
    - **[완료 - 3단계로 이어짐]** 인증(JWT) + WatchList 설계·1~2단계 구현
      완료. 상세는 아래 10번 항목 참고.
 
-10. **[진행 중] 3단계 — 인증(JWT) + WatchList** — 설계안(스키마/JWT 방식/
+10. **[완료] 3단계 — 인증(JWT) + WatchList** — 설계안(스키마/JWT 방식/
     API 보호 범위/기존 코드 영향)을 먼저 제안하고 사용자 확인(refresh token
     Stateless, `/search`·`/answers` 공개 유지, `users.nickname` 추가)을
-    받은 뒤 한 걸음씩 구현 중. 상세는 위 1절 마지막 항목 참고.
+    받은 뒤 한 걸음씩 구현했다. 상세는 위 1절 마지막 항목 참고.
     - **[완료]** Flyway V3(`users`/`watchlist`) + JPA 엔티티, psql +
       `ddl-auto: validate`로 검증.
     - **[완료]** Spring Security + JWT 인프라(화이트리스트 방식, HS256,
       access 30분/refresh 14일 Stateless). 회귀 확인 전부 통과(curl +
       `./gradlew test` + 프론트 Playwright). 필터 단계 응답 한글 인코딩
       버그 발견/수정.
-    - **[내일 할 일 - 3단계 계속]**
-      1. **회원가입/로그인/토큰 갱신 API** — `POST /api/v1/auth/signup`,
-         `/login`, `/refresh`. BCrypt 해시, 가입과 동시에 토큰 발급.
-      2. **회사 검색 API**(자동완성용) — `GET /api/v1/companies?q=` -
-         `corp_name ILIKE` 부분일치, 공개 엔드포인트.
-      3. **WatchList CRUD API** — `POST`/`GET`/`DELETE
-         /api/v1/watchlist`, 인증 필수 - 토큰 없이 401 / 토큰 있으면
-         정상 동작까지 확인.
-      4. (그다음) 프론트 — 로그인/회원가입 화면 + WatchList 화면.
+    - **[완료]** 회원가입/로그인/토큰 갱신 API, 회사 검색 API, WatchList
+      CRUD API 전부 구현 + curl로 실제 동작 검증(핵심 인가 테스트인 "타
+      유저 항목 삭제 시도 → 404" 포함), 회귀 확인(`/search`, CORS,
+      `./gradlew test`)까지 완료 - **3단계 백엔드 완성**. 상세는 위 1절
+      마지막 항목 참고.
+    - **[완료] 프론트엔드 전체** — 토큰 저장 방식(access는 메모리, refresh는
+      localStorage 절충안 - 결정 근거는 위 1절 참고) 결정 후, 인증 상태
+      관리 구조(`lib/tokenStore.ts`) → 로그인/회원가입 화면(+헤더 로그인
+      상태 반영) → WatchList 화면(회사 검색 자동완성/등록/조회/삭제) 순서로
+      구현하고 각 단계 Playwright로 실제 백엔드에 대고 검증했다. 구현 중
+      CORS 허용 메서드 누락(`DELETE`) 버그를 발견해 수정했다. 상세는 위
+      1절 마지막 3개 항목 참고.
+
+    **이로써 3단계(인증+WatchList, 백엔드+프론트엔드) 전체가 완성됐다.**
 
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
+- **[해결됨] CORS 허용 메서드 목록에 새 HTTP 메서드 추가를 깜빡하면 curl
+  검증으로는 안 잡힌다** — WatchList 화면에서 삭제 버튼을 눌러도 목록에서
+  안 사라져 Playwright 콘솔을 보니 `DELETE /api/v1/watchlist/{id}`의 CORS
+  프리플라이트가 `Access-Control-Allow-Origin` 없이 막혀 있었다.
+  `WebConfig.corsConfigurationSource()`가 `/search`·`/answers`만 있던
+  시절 그대로 `setAllowedMethods(List.of("GET", "POST"))`로 고정돼 있어
+  오늘 추가한 `DELETE`가 허용 목록에 없었던 것. CORS는 브라우저가 강제하는
+  규칙이라 같은 날 앞서 했던 curl 기반 백엔드 검증(전부 통과)에서는 전혀
+  드러나지 않았다 - curl은 애초에 CORS를 검사하지 않기 때문. `"DELETE"`를
+  추가해 해결. **새 HTTP 메서드(PUT/PATCH/DELETE 등)를 쓰는 API를 추가할
+  때는 `WebConfig`의 CORS 허용 메서드 목록도 같이 업데이트해야 하고, 이
+  종류의 버그는 브라우저로 직접 확인해야만 드러난다는 걸 기억할 것.**
+- **[해결됨] `react-hooks/set-state-in-effect`(Next.js 16의 새 React
+  Compiler용 lint 규칙) - effect 본문의 동기적 setState는 위치와 무관하게
+  전부 걸림** — WatchList 화면 구현 중 두 파일에서 걸렸다. 처음엔 "async
+  작업 시작 직전에 호출되는 setState는 괜찮을 것"이라고 추측했는데, 실제로는
+  effect 본문에서 동기적으로 호출되는 모든 `setState`가 위치와 무관하게
+  걸린다는 걸 반복 실행으로 확인했다. **effect 본문은 async 작업을 "시작"만
+  하고 모든 setState는 `.then`/`.catch`/`.finally` 콜백 안에서만 호출해야
+  한다** - 목록 조회 effect는 `getWatchlist().then(...).catch(...).
+  finally(...)` 체인으로, "검색 중" 같은 사용자 입력에 즉각 반응해야 하는
+  상태는 effect가 아니라 `onChange` 이벤트 핸들러에서 동기적으로 설정하도록
+  옮겨서 해결(이벤트 핸들러 안의 setState는 이 규칙 대상이 아님). 나중에
+  "마운트 시 조회" 패턴을 또 쓸 때 같은 함정이 재현될 수 있음.
+- **[해결됨] Bean Validation은 서비스 계층의 정규화보다 먼저 실행된다** —
+  회원가입 API에 앞뒤 공백이 섞인 이메일(`"  Test.User@Example.com  "`)로
+  curl 테스트했더니 400이 났다. `AuthService.normalizeEmail()`(trim+lowercase)은
+  서비스 계층에서 실행되는데, `@Valid`의 `@Email` 검증은 컨트롤러 진입 시점
+  (record가 생성된 직후)에 원본 필드 값 그대로 실행돼 그보다 먼저 막아버린
+  것 - 검증이 정규화보다 먼저 일어난다는 실행 순서를 놓친 사례. `SignupRequest`/
+  `LoginRequest` record의 compact constructor에서 trim을 먼저 적용해, 검증
+  시점에 이미 trim된 값을 보게 해서 해결. **DTO 필드에 정규화가 필요하면
+  서비스 계층만으로는 부족하고, Bean Validation이 보는 시점(DTO 생성 시점)에
+  이미 정규화가 끝나 있어야 한다** — 나중에 다른 입력 필드도 정규화가
+  필요해지면 같은 함정이 재현될 수 있음.
 - **[해결됨] Spring Security 필터 단계 응답에서 한글이 ISO-8859-1로 깨짐** —
   JWT 인증 도입 후 첫 회귀 확인에서 401 응답의 `detail`이
   `"???? ?????."`로 나왔다. 컨트롤러에서 던진 예외는 Spring이 자동으로
@@ -1040,33 +1366,34 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
   양쪽에 자동 적용됨. 다시 조사할 필요 없음.
 - **유료 API 테스트 분리도 완료** - `./gradlew test`는 항상 비용 0(수동 검증은
   `./gradlew manualTest`로만). CLAUDE.md 규칙 참고.
-- **3단계(인증+WatchList) 진행 중** - 스키마(`users`/`watchlist`, Flyway V3)와
-  Spring Security + JWT 인프라(화이트리스트 방식)까지 완성, 회귀 확인 전부
-  통과. `auth/` 패키지(`SecurityConfig`/`JwtTokenProvider`/
-  `JwtAuthenticationFilter`/`JwtAuthenticationEntryPoint`/
-  `JwtAccessDeniedHandler`)를 다시 조사할 필요 없이 그대로 갖다 쓰면 됨.
-  아직 없는 것: 회원가입/로그인/토큰 갱신 API, 회사 검색 API, WatchList
-  API 전부 - `JwtTokenProvider`가 토큰을 검증만 하고 아직 아무도 발급하지
-  않는 상태(로그인 API가 없으므로). 상세는 위 3절 10번 참고.
+- **3단계(인증+WatchList) 백엔드 완성** - 스키마(`users`/`watchlist`,
+  Flyway V3), Spring Security + JWT 인프라, 그리고 회원가입/로그인/토큰
+  갱신/회사 검색/WatchList CRUD API 전부 구현 완료, curl로 실동작 검증까지
+  마쳤다(핵심 인가 테스트 포함). `auth/AuthService`, `watchlist/
+  WatchlistService`, `api/AuthController`/`CompanyController`/
+  `WatchlistController`, 프론트 `lib/tokenStore.ts`/`lib/api.ts`(인증
+  포함)/`app/login`/`app/signup`/`app/watchlist`를 다시 조사할 필요 없이
+  그대로 갖다 쓰면 됨 - **3단계(인증+WatchList) 전체 완성**. 상세는 위
+  3절 10번, API 명세는 2절 참고.
+- **회사 검색은 현재 데이터(558개 회사) 범위 내에서만 동작하는 한계가 있음** -
+  DART 전체 회사 목록(`corpCode.xml`) 적재는 9월 데이터 규모 확대 때 처리
+  예정. 그때부터 WatchList가 "아직 공시 없는 회사도 미리 등록해 미래
+  알림을 받는다"는 원래 의미를 온전히 갖게 됨(4절 참고).
 
-### 다음 세션 시작점 — 3단계 계속(회원가입/로그인/토큰 갱신 API)
+### 다음 세션 시작점 — 3단계 완성, 다음 범위는 논의 필요
 
-**1단계(메인 페이지)와 2단계(`/search` RRF 시각화)는 완성**, 3단계(인증+
-WatchList)는 스키마 + Security/JWT 인프라까지 완료된 상태에서 이어감. 다음
-할 일(위 3절 10번과 동일):
-
-1. `POST /api/v1/auth/signup`/`/login`/`/refresh` - BCrypt 해시, 가입과
-   동시에 토큰 발급. curl로 실제 토큰 발급 확인.
-2. `GET /api/v1/companies?q=` - 회사 자동완성, `corp_name ILIKE` 부분일치.
-3. WatchList CRUD (`POST`/`GET`/`DELETE /api/v1/watchlist`) - 토큰 없이
-   401, 토큰 있으면 정상 동작까지 확인.
-4. (그다음) 프론트 - 로그인/회원가입 화면 + WatchList 화면.
+**1단계(메인 페이지), 2단계(`/search` RRF 시각화), 3단계(인증+WatchList,
+백엔드+프론트엔드)까지 전부 완성**. CLAUDE.md 기준 1차 목표(MVP, 국내 DART
+공시 하나에 집중)의 핵심 파이프라인(수집→청킹→하이브리드 검색→RAG→API→화면)과
+인증/개인화(WatchList)까지 마무리된 상태 - 다음 범위(예: 4단계 알림,
+SEC/뉴스 RSS 등 CLAUDE.md에 확장 포인트로만 남겨둔 항목, 또는 9월 예정
+`corpCode.xml` 데이터 규모 확대)는 다음 세션 시작 시 사용자와 논의 후 결정.
 
 `JWT_SECRET`은 `.env`에 값이 채워져 있어야 백엔드가 뜬다(회귀 테스트 때
 임시 개발용 값을 넣어둠 - 실제 값으로 교체하고 싶으면 `.env`의
 `JWT_SECRET=` 줄만 바꾸면 됨, `.env.example`엔 키 이름만 있음).
 
-브라우저에서 세션 마지막에 확인한 화면은 `/search`(카드+듀얼마커+배지+상단
-요약)까지이고, 개발 서버는 세션 종료 시 둘 다 내려둠(`docker compose` 인프라는
-계속 켜둠) - 다음 세션 시작 시 `cd backend && ./gradlew bootRun`,
-`cd frontend && npm run dev`로 다시 띄우면 됨.
+브라우저에서 세션 마지막에 확인한 화면은 `/watchlist`(회사 검색 자동완성+
+등록/조회/삭제)까지이고, 개발 서버는 세션 종료 시 둘 다 내려둠(`docker
+compose` 인프라는 계속 켜둠) - 다음 세션 시작 시 `cd backend && ./gradlew
+bootRun`, `cd frontend && npm run dev`로 다시 띄우면 됨.
