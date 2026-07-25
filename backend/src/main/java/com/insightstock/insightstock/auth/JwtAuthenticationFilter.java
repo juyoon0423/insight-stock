@@ -39,9 +39,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (header != null && header.startsWith(BEARER_PREFIX)) {
             String token = header.substring(BEARER_PREFIX.length());
             try {
-                Long userId = jwtTokenProvider.getUserId(token);
-                var authentication = new UsernamePasswordAuthenticationToken(userId, null, List.of());
-                SecurityContextHolder.getContext().setAuthentication(authentication);
+                // 엄격 모드: refresh token은 /api/v1/auth/refresh 전용이라 일반 API 인증에는
+                // 쓸 수 없다 - 여기서 걸러내지 않으면 탈취된 refresh token으로 access token
+                // 없이도 보호된 API를 호출할 수 있게 된다(3단계 설계 논의 참고).
+                if (jwtTokenProvider.isRefreshToken(token)) {
+                    log.debug("refresh 토큰은 일반 API 인증에 사용할 수 없습니다.");
+                } else {
+                    Long userId = jwtTokenProvider.getUserId(token);
+                    var authentication = new UsernamePasswordAuthenticationToken(userId, null, List.of());
+                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                }
             } catch (JwtException | IllegalArgumentException e) {
                 log.debug("유효하지 않은 JWT: {}", e.getMessage());
                 SecurityContextHolder.clearContext();

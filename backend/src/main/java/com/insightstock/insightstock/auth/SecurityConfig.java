@@ -60,6 +60,9 @@ public class SecurityConfig {
                         // 체험 가능해야 한다는 판단으로 공개 유지(3단계 설계 논의 참고).
                         .requestMatchers(HttpMethod.GET, "/api/v1/search").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/answers").permitAll()
+                        // 회사 검색은 WatchList 등록 전 자동완성용 - 로그인 없이도 검색만은
+                        // 가능해야 하므로 공개 유지(등록 자체는 WatchList API가 인증을 요구).
+                        .requestMatchers(HttpMethod.GET, "/api/v1/companies").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();

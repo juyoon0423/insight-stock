@@ -1,7 +1,13 @@
 package com.insightstock.insightstock.api;
 
+import com.insightstock.insightstock.auth.DuplicateEmailException;
+import com.insightstock.insightstock.auth.InvalidCredentialsException;
+import com.insightstock.insightstock.auth.InvalidRefreshTokenException;
 import com.insightstock.insightstock.embedding.EmbeddingApiException;
 import com.insightstock.insightstock.rag.RagApiException;
+import com.insightstock.insightstock.watchlist.CompanyNotFoundException;
+import com.insightstock.insightstock.watchlist.DuplicateWatchlistException;
+import com.insightstock.insightstock.watchlist.WatchlistNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.util.stream.Collectors;
@@ -63,6 +69,37 @@ public class GlobalExceptionHandler {
                 "SEARCH_UNAVAILABLE",
                 "검색 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
                 request);
+    }
+
+    @ExceptionHandler(DuplicateEmailException.class)
+    public ProblemDetail handleDuplicateEmail(DuplicateEmailException ex, HttpServletRequest request) {
+        return problemDetail(HttpStatus.CONFLICT, "EMAIL_ALREADY_EXISTS", "이미 가입된 이메일입니다.", request);
+    }
+
+    @ExceptionHandler(InvalidCredentialsException.class)
+    public ProblemDetail handleInvalidCredentials(InvalidCredentialsException ex, HttpServletRequest request) {
+        return problemDetail(
+                HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "이메일 또는 비밀번호가 올바르지 않습니다.", request);
+    }
+
+    @ExceptionHandler(InvalidRefreshTokenException.class)
+    public ProblemDetail handleInvalidRefreshToken(InvalidRefreshTokenException ex, HttpServletRequest request) {
+        return problemDetail(HttpStatus.UNAUTHORIZED, "INVALID_REFRESH_TOKEN", "유효하지 않은 refresh 토큰입니다.", request);
+    }
+
+    @ExceptionHandler(CompanyNotFoundException.class)
+    public ProblemDetail handleCompanyNotFound(CompanyNotFoundException ex, HttpServletRequest request) {
+        return problemDetail(HttpStatus.NOT_FOUND, "COMPANY_NOT_FOUND", "존재하지 않는 회사입니다.", request);
+    }
+
+    @ExceptionHandler(DuplicateWatchlistException.class)
+    public ProblemDetail handleDuplicateWatchlist(DuplicateWatchlistException ex, HttpServletRequest request) {
+        return problemDetail(HttpStatus.CONFLICT, "WATCHLIST_ALREADY_EXISTS", "이미 관심 목록에 등록된 회사입니다.", request);
+    }
+
+    @ExceptionHandler(WatchlistNotFoundException.class)
+    public ProblemDetail handleWatchlistNotFound(WatchlistNotFoundException ex, HttpServletRequest request) {
+        return problemDetail(HttpStatus.NOT_FOUND, "WATCHLIST_NOT_FOUND", "존재하지 않는 관심 목록 항목입니다.", request);
     }
 
     @ExceptionHandler(Exception.class)
