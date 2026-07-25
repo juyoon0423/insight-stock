@@ -1394,6 +1394,20 @@ SEC/뉴스 RSS 등 CLAUDE.md에 확장 포인트로만 남겨둔 항목, 또는 
 `JWT_SECRET=` 줄만 바꾸면 됨, `.env.example`엔 키 이름만 있음).
 
 브라우저에서 세션 마지막에 확인한 화면은 `/watchlist`(회사 검색 자동완성+
-등록/조회/삭제)까지이고, 개발 서버는 세션 종료 시 둘 다 내려둠(`docker
-compose` 인프라는 계속 켜둠) - 다음 세션 시작 시 `cd backend && ./gradlew
-bootRun`, `cd frontend && npm run dev`로 다시 띄우면 됨.
+등록/조회/삭제)까지이고, 개발 서버 둘 다와 `docker compose` 인프라까지
+전부 내리고 세션을 마쳤다(이번엔 평소와 다르게 인프라도 내림) - 다음 세션
+시작 시 `docker compose up -d`부터 다시 하고, `cd backend && ./gradlew
+bootRun`, `cd frontend && npm run dev`로 띄우면 됨.
+
+### 다음 세션 논의거리 (우선순위 미정, 시작 시 바로 정할 것)
+
+- 4단계 알림 — 전달 방식 결정 필요(화면 배지 / 이메일 등).
+- `corpCode.xml` 회사 목록 확대
+- 데이터 규모 확대 (이틀치 → 몇 달치)
+- 검색 품질 측정
+- AWS 배포 + 무중단 배포
+
+**추천 순서**: `corpCode.xml` 확대 → 데이터 규모 확대 → 검색 품질 측정 →
+4단계 알림 → AWS 배포 — 데이터부터 넓혀야 품질 측정이 의미 있고, 알림도
+`corpCode.xml` 확대 후에야 WatchList의 "미래 예약" 의미가 성립하며, 배포는
+기능이 갖춰진 뒤 마지막에 보여주는 게 자연스럽기 때문.
