@@ -1,6 +1,6 @@
 # 진행 상황 (Progress)
 
-마지막 업데이트: 2026-07-25
+마지막 업데이트: 2026-07-27
 
 다음 세션 시작 시 이 문서부터 읽으면 지금까지 뭘 했고 다음에 뭘 할지 바로 파악할 수 있다.
 
@@ -795,6 +795,67 @@
 
   **이로써 3단계(인증+WatchList, 백엔드+프론트엔드) 전체가 완성됐다.**
 
+- **corpCode.xml 회사 목록 확대 — companies 1,044건 → 118,535건, "미리
+  최적화"가 뒤집힌 실측 사례 발견** — 코드 작성 전에 설계안(corpCode.xml
+  구조/적재 방식/중복 처리/스키마 변경 여부)을 먼저 제안하고, 사용자와 3가지
+  결정(관리 가능한 배치로 구현/pg_trgm 인덱스 미리 추가/기존 데이터는
+  corpCode.xml 값으로 덮어씀)을 확인한 뒤 실물부터 받아 구조를 검증하고
+  단계적으로 구현했다.
+
+  **[실측] corpCode.xml 구조** — ZIP(3.6MB) 안에 `CORPCODE.xml`(30MB, UTF-8)
+  단일 파일, 전체 118,535건, `corp_code` 전부 고유. 예상대로 `corp_cls`(법인구분)
+  필드가 없었고, `stock_code` 빈 값은 공백 문자 정확히 1개(8칸 아님) - `.strip()`
+  후 판단해야 함을 확인했다. `corp_name`은 11.3%(13,382건)가 동명이인이라
+  `corp_code`만이 유일 키임을 재확인. 기존 DB(당시 1,044건) 전량이 corpCode.xml에
+  그대로 존재했고(누락 0), 실제 상호변경 사례(corp_code=01065013: 우정바이오
+  →콜마바이오텍) 1건을 발견해 "corpCode.xml 값으로 덮어쓴다"는 결정의 실익을
+  증명했다. 상세: dart-findings.md 2-11.
+
+  **[완료] Flyway V4** — `corp_cls`를 nullable로 완화(corpCode.xml에 없는
+  필드라 신규 회사는 알 수 없음), `pg_trgm` 확장 + `corp_name` GIN 인덱스
+  추가(자동완성 성능 대비), `companies.updated_at` 추가(disclosures와 같은
+  패턴).
+
+  **[완료] `CorpCodeSyncService`/`CorpCodeSyncScheduler`** — `DartCorpCodeClient`로
+  ZIP을 받아 `CORPCODE.xml`을 엄격 DOM 파싱(실측 결과 이 파일은 document API
+  원문과 달리 전량 well-formed라 정제/정규식 폴백이 불필요)한 뒤, `JdbcTemplate`
+  배치(1,000건 단위) `INSERT ... ON CONFLICT (corp_code) DO UPDATE`로 upsert한다.
+  **`corp_cls`를 UPSERT 구문에서 아예 참조하지 않아** SQL 구조 자체로 기존
+  값을 보존하는 게 핵심 설계다. list/document 수집기와 달리 페이징 없는 전체
+  스냅샷이라 스케줄은 하루 1회(cron, 새벽 3시)로 잡고 다른 collector들처럼
+  검증 전엔 비활성화 상태로 뒀다.
+
+  파일럿(501건)→전체(118,535건) 순서로 단계적으로 검증했다(`CorpCodeSyncManualIT`,
+  manualTest 전용 - DART corpCode.xml 자체는 무료지만 실제 DB를 변경하는
+  통합 테스트라 기존 ManualIT 패턴을 그대로 재사용). 파일럿에서 상호변경
+  케이스가 실제로 덮어써지는 것과 `corp_cls`(K)가 그대로 보존되는 것을 직접
+  확인한 뒤 전체 적재를 진행했다. 최종: `companies` 1,044 → **118,535건**
+  (기존 1,044건 전량이 corpCode.xml의 부분집합이라 합집합이 곧 전체 건수),
+  기존 1,044건 전수 비교로 `corp_cls` 유실/변경 0건 확인.
+
+  **[완료] `DisclosureCollectorService` 보정** — `findOrCreateCompany()`가
+  기존 회사를 찾았을 때 `corp_cls`가 null이면 이번 list API 응답 값으로
+  채우도록 수정했다 - corpCode.xml로만 존재하던 회사가 나중에 실제 공시를
+  내면 자연히 법인구분이 채워지는 구조.
+
+  **[완료, 계획에 없던 발견] pg_trgm 인덱스가 실측에서 무효로 판명 - "먼저
+  실측하고 설계한다"는 원칙의 반대 사례** — 적재 후 자동완성 성능을
+  검증하려고 Hibernate가 생성하는 실제 SQL을 로그로 확인했더니, Spring
+  Data JPA의 `ContainingIgnoreCase`가 `upper(corp_name) LIKE upper(?)`로
+  번역돼 원본 `corp_name` 컬럼에 건 인덱스와 predicate가 애초에 안 맞았다
+  (`EXPLAIN ANALYZE`, `enable_seqscan=off`로 강제해도 Seq Scan만 선택 -
+  매칭되는 플랜 자체가 없음). `upper()` 없는 순수 `ILIKE`로 바꾸면 인덱스가
+  기술적으론 매칭되지만, "삼성" 같은 한글 2글자 검색어는 trigram 선택도가
+  낮아 강제 스캔이 214.705ms로 Seq Scan(27.969ms)보다 7배 느렸다. 118,535건
+  규모에서 Seq Scan 자체가 이미 27~42ms로 충분히 빨라, Flyway V5로 인덱스를
+  제거했다(`pg_trgm` 확장은 나중을 위해 유지). "10만 건 LIKE 검색은 느릴
+  것"이라는 합리적으로 보이는 추론이 ORM의 실제 SQL 생성 방식과 도메인
+  데이터(한글 단문) 특성을 실측하지 않고는 틀릴 수 있음을 보여준 사례.
+  상세: dart-findings.md 2-12.
+
+  4개 커밋으로 의미 단위 분리해 push 완료: 스키마(V4+V5), 동기화 배치,
+  `corp_cls` 보정, 문서화.
+
 ## 2. 현재 프로젝트 상태 요약
 
 ### 기술 스택
@@ -829,8 +890,10 @@ insight-stock/
 │       │                  # support/VectorType, User, Watchlist
 │       ├── repository/    # CompanyRepository, DisclosureRepository, ChunkRepository,
 │       │                  # UserRepository, WatchlistRepository
-│       ├── dart/          # DartListClient, DartDocumentClient, XmlTextExtractor, DartApiException, DartUrls, dto/
-│       ├── collector/     # DisclosureCollectorService(+Scheduler), DocumentCollectorService(+Scheduler)
+│       ├── dart/          # DartListClient, DartDocumentClient, DartCorpCodeClient, XmlTextExtractor,
+│       │                  # DartApiException, DartUrls, dto/(CorpCodeRecord 포함)
+│       ├── collector/     # DisclosureCollectorService(+Scheduler), DocumentCollectorService(+Scheduler),
+│       │                  # CorpCodeSyncService(+Scheduler)
 │       ├── chunking/      # ChunkingService(+Scheduler)
 │       ├── indexing/      # ChunkDocument, ChunkDocumentRepository, IndexingService(+Scheduler)
 │       ├── embedding/     # EmbeddingClient/OpenAiEmbeddingClient, TokenCounter, EmbeddingService(+Scheduler), dto/
@@ -852,7 +915,8 @@ insight-stock/
 │       ├── elasticsearch/chunk-index-settings.json  # Nori 분석기 + 사용자 사전
 │       ├── prompts/rag-system-prompt.txt  # RAG system prompt (코드와 분리, 튜닝 시 재컴파일 불필요)
 │       └── db/migration/  # V1__init_schema.sql, V2__add_chunk_source.sql,
-│                          # V3__add_users_and_watchlist.sql
+│                          # V3__add_users_and_watchlist.sql, V4__corp_code_sync.sql,
+│                          # V5__drop_unused_corp_name_trgm_index.sql
 ├── frontend/               # Next.js 16(App Router, TypeScript, Tailwind CSS)
 │   ├── app/                # page.tsx(메인 화면), search/(2단계 RRF 시각화 화면),
 │   │                       # login/, signup/, watchlist/(3단계 인증+WatchList 화면)
@@ -881,6 +945,9 @@ insight-stock/
 
 - `companies`: 558건, `disclosures`: 1960건, `chunks`: 5,201건 — ElasticSearch
   `chunks` 인덱스에도 5,201건 색인 완료(Postgres/ES 건수 일치 확인)
+  (**갱신, 2026-07-27**: corpCode.xml 확대로 `companies`는 **118,535건**으로
+  늘었다 - `disclosures`/`chunks`는 이 작업과 무관해 그대로. 위 1절 corpCode.xml
+  항목 참고.)
 - `chunks.embedding`: 5,201건 전부 채워짐(`embedding IS NULL` 0건),
   `vector_dims` 전부 1536, `embedding_model` 전부 `text-embedding-3-small`
   1종. 총 토큰 3,403,072 / 실제 비용 $0.068(사전 추정과 정확히 일치)
@@ -1160,6 +1227,14 @@ list API 수집, document 원문 수집, 청킹, 청크 폭증 대응, ElasticSe
 
     **이로써 3단계(인증+WatchList, 백엔드+프론트엔드) 전체가 완성됐다.**
 
+11. **[완료] corpCode.xml 회사 목록 확대** — 설계안(구조/적재 방식/중복 처리/
+    스키마 변경)을 먼저 제안하고 사용자 확인(관리 가능한 배치/pg_trgm 인덱스
+    선반영/기존 데이터 덮어쓰기)을 받은 뒤, 실물부터 받아 구조를 실측하고
+    파일럿→전체 순서로 단계적으로 구현했다. `companies` 1,044 → 118,535건.
+    부수 발견으로 미리 추가한 `pg_trgm` 인덱스가 실측(EXPLAIN ANALYZE)에서
+    무효로 판명돼 제거했다 - "먼저 실측하고 설계한다"는 원칙의 반대 사례로
+    dart-findings.md에 남김. 상세는 위 1절 마지막 항목 참고.
+
 ## 4. 알려진 미해결 / 주의사항 (반드시 기록)
 
 - **[해결됨] CORS 허용 메서드 목록에 새 HTTP 메서드 추가를 깜빡하면 curl
@@ -1375,19 +1450,20 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
   포함)/`app/login`/`app/signup`/`app/watchlist`를 다시 조사할 필요 없이
   그대로 갖다 쓰면 됨 - **3단계(인증+WatchList) 전체 완성**. 상세는 위
   3절 10번, API 명세는 2절 참고.
-- **회사 검색은 현재 데이터(558개 회사) 범위 내에서만 동작하는 한계가 있음** -
-  DART 전체 회사 목록(`corpCode.xml`) 적재는 9월 데이터 규모 확대 때 처리
-  예정. 그때부터 WatchList가 "아직 공시 없는 회사도 미리 등록해 미래
-  알림을 받는다"는 원래 의미를 온전히 갖게 됨(4절 참고).
+- **[해결됨] 회사 검색이 현재 데이터(558개 회사) 범위 내에서만 동작하던 한계** -
+  2026-07-27 corpCode.xml 확대로 `companies`가 118,535건이 됐다. WatchList가
+  "아직 공시 없는 회사도 미리 등록해 미래 알림을 받는다"는 원래 의미를 이제
+  온전히 갖게 됨(상세: 위 1절 corpCode.xml 항목, 3절 11번).
 
-### 다음 세션 시작점 — 3단계 완성, 다음 범위는 논의 필요
+### 다음 세션 시작점 — 3단계 + corpCode.xml 확대 완성, 다음 범위는 논의 필요
 
 **1단계(메인 페이지), 2단계(`/search` RRF 시각화), 3단계(인증+WatchList,
-백엔드+프론트엔드)까지 전부 완성**. CLAUDE.md 기준 1차 목표(MVP, 국내 DART
-공시 하나에 집중)의 핵심 파이프라인(수집→청킹→하이브리드 검색→RAG→API→화면)과
-인증/개인화(WatchList)까지 마무리된 상태 - 다음 범위(예: 4단계 알림,
-SEC/뉴스 RSS 등 CLAUDE.md에 확장 포인트로만 남겨둔 항목, 또는 9월 예정
-`corpCode.xml` 데이터 규모 확대)는 다음 세션 시작 시 사용자와 논의 후 결정.
+백엔드+프론트엔드), corpCode.xml 회사 목록 확대까지 전부 완성**. CLAUDE.md
+기준 1차 목표(MVP, 국내 DART 공시 하나에 집중)의 핵심 파이프라인(수집→청킹→
+하이브리드 검색→RAG→API→화면)과 인증/개인화(WatchList), 전체 회사 마스터
+데이터까지 마무리된 상태 - 다음 범위(데이터 규모 확대/검색 품질 측정/4단계
+알림/AWS 배포, 아래 "다음 세션 논의거리" 참고)는 다음 세션 시작 시 사용자와
+논의 후 결정.
 
 `JWT_SECRET`은 `.env`에 값이 채워져 있어야 백엔드가 뜬다(회귀 테스트 때
 임시 개발용 값을 넣어둠 - 실제 값으로 교체하고 싶으면 `.env`의
@@ -1401,13 +1477,83 @@ bootRun`, `cd frontend && npm run dev`로 띄우면 됨.
 
 ### 다음 세션 논의거리 (우선순위 미정, 시작 시 바로 정할 것)
 
-- 4단계 알림 — 전달 방식 결정 필요(화면 배지 / 이메일 등).
-- `corpCode.xml` 회사 목록 확대
-- 데이터 규모 확대 (이틀치 → 몇 달치)
+- ~~`corpCode.xml` 회사 목록 확대~~ — **완료(2026-07-27)**, 위 1절/3절 11번 참고.
+- 4단계 알림 — 전달 방식 결정 필요(화면 배지 / 이메일 등). corpCode.xml 확대가
+  끝나 WatchList의 "미래 예약" 의미가 이제 성립함.
+- 데이터 규모 확대 (이틀치 → 몇 달치) — **1단계(파이프라인 준비) 진행 중**, 아래
+  "데이터 규모 확대 진행 상황" 참고.
 - 검색 품질 측정
 - AWS 배포 + 무중단 배포
+- **감사보고서/연결감사보고서 ZIP 내부 파일명 불일치 조사** — 4절에 기록된 미해결
+  항목(`FAILED` 5건, `DocumentCollectorService.extractXmlFromZip`에서 `ZIP 안에
+  {rcept_no}.xml 항목이 없습니다`). 데이터 규모 확대 1단계에서 이 문제를 다룰지
+  검토했으나, `DocumentCollectorService`는 이미 건별 try/catch가 있어 이 유형
+  실패가 배치 전체를 막지는 않는다는 점(블로커 아님)에서 이번 확대 작업과는
+  분리하기로 했다 — 원인 파악에는 그 report_nm 유형의 document API 응답을 직접
+  열어보는 별도 조사가 필요해서다. 기간을 넓히면 이 유형 `FAILED` 건수는 늘겠지만
+  다른 공시 처리를 막지 않으므로 데이터 확대를 막는 블로커는 아니다.
 
-**추천 순서**: `corpCode.xml` 확대 → 데이터 규모 확대 → 검색 품질 측정 →
-4단계 알림 → AWS 배포 — 데이터부터 넓혀야 품질 측정이 의미 있고, 알림도
-`corpCode.xml` 확대 후에야 WatchList의 "미래 예약" 의미가 성립하며, 배포는
-기능이 갖춰진 뒤 마지막에 보여주는 게 자연스럽기 때문.
+**추천 순서**: 데이터 규모 확대 → 검색 품질 측정 → 4단계 알림 → AWS 배포 —
+데이터부터 넓혀야 품질 측정이 의미 있고, 배포는 기능이 갖춰진 뒤 마지막에
+보여주는 게 자연스럽기 때문.
+
+### 데이터 규모 확대 진행 상황
+
+**결정된 접근**: 이틀치(147건/5,201청크) 실측값을 외삽한 비용표는 참고용일 뿐 믿지
+않기로 했다 — 786,390자 문서 1건이 전체 청크의 27%를 차지했던 사례처럼 "공시
+건수"보다 "어떤 유형이 섞였는지"가 청크 수를 훨씬 크게 좌우해서다. 대신 수집→
+정제→청킹→색인까지는 전부 무료(임베딩만 유료)라는 점을 이용해 **후보 기간을
+먼저 무료로 통째로 돌려 실제 청크/토큰 수를 확정한 뒤, 그 실측값으로 임베딩
+범위를 최종 결정**하기로 했다. 순서: 1단계(파이프라인 준비) → 2단계(무료 수집·
+청킹·색인 실행) → 3단계(jtokkit 실측 비용 계산 후 임베딩 범위 확정).
+
+- **[완료] 1단계 — 파이프라인 준비** — 실행 전 두 가지를 먼저 고쳤다.
+  - `DisclosureCollectorService.collect(beginDate, endDate)`를 `public`으로
+    노출(기존엔 `collectToday()`만 공개돼 있어 과거 기간을 당길 방법이 없었음),
+    `beginDate.isAfter(endDate)` 가드 추가, 첫 페이지에서 `totalCount`를 로그로
+    남기게 함(대량 요청 전에 무료로 규모를 먼저 가늠할 수 있게).
+  - `collect()`의 페이지 순회 루프에 항목별 try/catch 추가 — 기존엔 한 건
+    저장 실패가 그 페이지(그리고 이후 페이지까지) 전체를 막을 수 있었음(4절에
+    기록된 미해결 리스크). `DocumentCollectorService.processDisclosure()`가
+    이미 쓰던 패턴과 동일하게 맞춤. `saveIfNew()` 내부 `save()` 호출은
+    클래스에 `@Transactional`이 없어 호출마다 개별 커밋되므로, 이 변경은
+    순수하게 "한 건 예외가 나머지를 막지 못하게"만 하는 것이라 안전하다.
+  - **핵심 발견 — "1회성 백필 모드"에 설정 변경이 필요 없었다**: 처음엔
+    스케줄러 배치 크기(`batch-size: 20`, 10분 간격)를 일시적으로 키우는
+    방식을 생각했는데, 코드를 다시 보니 `DocumentCollectorService.
+    collectPending(limit)` / `ChunkingService.chunkPending(limit)` /
+    `IndexingService.indexPending(limit)` / `EmbeddingService.
+    embedPending(limit)` 전부 이미 임의의 `limit`을 받는다 — `batch-size`는
+    스케줄러가 10분마다 몇 건씩 집을지만 정할 뿐, 서비스 메서드 자체는
+    스케줄러 없이 큰 수를 직접 넘겨 한 번에 처리할 수 있다. 그래서 서비스
+    로직/설정값 변경 없이, 이 메서드들을 큰 `limit`으로 직접 호출하는
+    ManualIT만 추가하면 됐다.
+  - **신규 ManualIT 5개**(서비스당 1개 — `CorpCodeSyncManualIT` 선례와 컨벤션
+    일관, 단계별 독립 실행 가능, 특히 유일한 유료 단계인 임베딩을 별도
+    파일로 격리): `DisclosureCollectorManualIT`(collector 패키지, `backfillRange()`,
+    최근 90일 상대 계산 — 날짜 하드코딩 없음), `DocumentCollectorManualIT`
+    (collector, `backfillAll()`), `ChunkingManualIT`(chunking, `backfillAll()`),
+    `IndexingManualIT`(indexing, `backfillAll()`), `EmbeddingManualIT`
+    (embedding, `pilotEmbed()`/`fullBackfillEmbed()` — 기존 임베딩 파이프라인
+    도입 때 썼던 파일럿→전체 2단계 패턴 재사용).
+  - **이중 안전장치**: "아직 실제 대량 수집은 하지 마"라는 지시를 코드
+    레벨에서도 지키도록, 5개 파일 전부에 `BACKFILL_APPROVED = false` 플래그를
+    넣어 2단계 실행을 명시적으로 승인하기 전까지는 아무 것도 하지 않고
+    메시지만 출력한다(`manualTest` 태스크를 통째로 돌리거나 실수로 개별
+    실행해도 안전). 임베딩은 한 겹 더 둬서 `fullBackfillEmbed()`가
+    `BACKFILL_APPROVED`와 `BACKFILL_LIMIT > 0`을 모두 만족해야만 동작한다.
+    `embedding.collector.enabled: false`도 그대로 유지(스케줄러와 수동 호출이
+    동시에 임베딩을 부르는 경로 차단).
+  - 검증: `./gradlew test`(회귀, 기존 스위트 전부 통과 — `collect()`의 새 로그
+    라인이 앱 컨텍스트 기동 시 실제 스케줄러 호출에서도 정상 출력됨을 확인),
+    `./gradlew manualTest --tests`로 새 ManualIT 5개만 타겟팅해 실행 —
+    5개 전부 가드 메시지만 출력하고 실제 API 호출/DB 변경 없이 종료됨을 확인
+    (다른 유료 ManualIT는 타겟팅에서 제외해 실행되지 않음).
+  - **의도적으로 분리한 것**: `감사보고서`/`연결감사보고서` `FAILED` 5건 조사는
+    이번 1단계에 포함하지 않음 — 위 "다음 세션 논의거리" 참고.
+- **[다음] 2단계 — 무료 수집·청킹·색인 실행** — 아직 실행 전. 5개 ManualIT의
+  `BACKFILL_APPROVED`를 순서대로(수집→문서→청킹→색인) `true`로 바꿔가며 개별
+  실행, 실제 공시/청크 수를 확정.
+- **[다음] 3단계 — 실측 비용 계산 후 임베딩 범위 결정** — 2단계 결과 청크 수를
+  jtokkit으로 토큰 계산 → 비용 확정 → 예산($4.9x) 대비 범위 최종 결정 →
+  `EmbeddingManualIT`의 `BACKFILL_APPROVED`/`BACKFILL_LIMIT` 설정 후 실행.

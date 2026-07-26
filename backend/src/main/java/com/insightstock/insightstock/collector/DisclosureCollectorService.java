@@ -42,11 +42,19 @@ public class DisclosureCollectorService {
         collect(today, today);
     }
 
-    private void collect(LocalDate beginDate, LocalDate endDate) {
+    // 기간 지정 수집(데이터 규모 확대 백필용). rcept_no 중복 체크가 이미 멱등을
+    // 보장하므로 collectToday()와 기존 데이터가 겹치는 범위를 넣어도 안전하다.
+    public void collect(LocalDate beginDate, LocalDate endDate) {
+        if (beginDate.isAfter(endDate)) {
+            throw new IllegalArgumentException(
+                    "beginDate(%s)가 endDate(%s)보다 늦을 수 없습니다.".formatted(beginDate, endDate));
+        }
+
         int pageNo = 1;
         int totalPage = 1;
         int savedCount = 0;
         int skippedCount = 0;
+        int failedCount = 0;
 
         do {
             DartListResponse response = dartListClient.fetchList(beginDate, endDate, pageNo, PAGE_COUNT);
@@ -59,12 +67,22 @@ public class DisclosureCollectorService {
                 throw new DartApiException(
                         "DART list API 오류: status=%s, message=%s".formatted(response.status(), response.message()));
             }
+            if (pageNo == 1) {
+                // 대량 백필 전에 전체 건수를 미리 가늠할 수 있도록 로그로 남긴다(무료).
+                log.info("DART 공시 조회 ({} ~ {}): 총 {}건, {}페이지", beginDate, endDate,
+                        response.totalCount(), response.totalPage());
+            }
 
             for (DartDisclosureItem item : response.list()) {
-                if (saveIfNew(item)) {
-                    savedCount++;
-                } else {
-                    skippedCount++;
+                try {
+                    if (saveIfNew(item)) {
+                        savedCount++;
+                    } else {
+                        skippedCount++;
+                    }
+                } catch (Exception e) {
+                    log.error("공시 저장 실패 (rcept_no={})", item.rceptNo(), e);
+                    failedCount++;
                 }
             }
 
@@ -72,7 +90,8 @@ public class DisclosureCollectorService {
             pageNo++;
         } while (pageNo <= totalPage);
 
-        log.info("DART 공시 수집 완료 ({} ~ {}): 신규 {}건, 스킵 {}건", beginDate, endDate, savedCount, skippedCount);
+        log.info("DART 공시 수집 완료 ({} ~ {}): 신규 {}건, 스킵 {}건, 실패 {}건",
+                beginDate, endDate, savedCount, skippedCount, failedCount);
     }
 
     private boolean saveIfNew(DartDisclosureItem item) {
