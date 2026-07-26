@@ -467,6 +467,122 @@ top 200(전체 5,201건 중)에도 안 들어왔다**:
 `/search` 화면에서 "관련 공시 N건"으로 펼쳐볼 수 있게 했다(DART 링크 포함,
 출처는 하나도 숨기지 않음).
 
+### 2-11. corpCode.xml 실측 — corp_cls 없음, stock_code는 공백 1개, corp_name은 유일하지 않음
+
+2026-07-26, 회사 목록 확대(corpCode.xml 적재) 설계 단계에서 실제로 한 번 받아 구조를
+확인했다. 마이그레이션/파싱 로직을 짜기 전에 실물부터 본다는 원칙 그대로다.
+
+**받는 방법**: `GET https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key={API_KEY}`.
+document API와 마찬가지로 ZIP으로 온다(3.6MB) — 안에 `CORPCODE.xml` 파일 하나(30MB,
+UTF-8)가 들어있다. list/document API와 달리 페이징 파라미터가 없다 - 등록된 회사
+전체를 한 번에 스냅샷으로 준다.
+
+**XML 구조** — document API의 `dart4.xsd` 스키마와 전혀 다른 단순 목록형이다:
+```xml
+<result>
+  <list>
+    <corp_code>00434003</corp_code>
+    <corp_name>다코</corp_name>
+    <corp_eng_name>Daco corporation</corp_eng_name>
+    <stock_code> </stock_code>
+    <modify_date>20170630</modify_date>
+  </list>
+  <!-- 118,535건 반복 -->
+</result>
+```
+`xml.etree.ElementTree`(엄격 파서)로 에러 없이 전체가 파싱됐다 — document API 원문
+(2-2, 2-5, 2-7)과 달리 이 파일은 애초에 well-formed라 관대한 파싱/폴백이 필요 없다.
+
+**전체 건수**: 118,535건. `corp_code` 전부 8자리 숫자 문자열이고 완전히 고유(중복 0건) —
+설계 단계에서 전제한 "corp_code만이 신뢰할 수 있는 키"가 실측으로도 확인됨.
+
+**`corp_cls` 필드가 정말로 없다** — 설계 단계에서 예상한 대로다. corpCode.xml에는
+법인구분(Y/K/N/E)이 아예 없고, list API 응답에만 존재한다. `companies.corp_cls`를
+nullable로 바꿔야 한다는 결정이 실물로 확정됨.
+
+**`stock_code` 빈 값의 정확한 형태 — 공백 문자 정확히 1개**(`" "`, `len=1`). 8칸
+공백이 아니었다 — 파싱 시 `.strip()` 결과가 빈 문자열이면 `null`로 저장하면 된다.
+118,535건 중 종목코드가 채워진(비상장이 아닌) 건 3,979건(3.4%)뿐이고, 전부 6자리
+숫자였다. (참고: 3,979건은 흔히 알려진 코스피+코스닥+코넥스 합계 약 2,500개보다
+많다 — 우선주 등 별도 종목코드를 갖는 종목이나 상장폐지 이력까지 섞여 있는 것으로
+추정되나, 이번 설계에는 영향이 없어 더 파고들지 않았다.)
+
+**`corp_name`**: 길이 1~73자(`VARCHAR(255)`로 충분). 특수문자는 실제 상호에 흔한
+것들(`. ) ( , & - : · / ' +` 등)만 나왔고 위험한 문자(`<`, `>`, 제어문자)는 없었다.
+**예외 1건**: 회사명에 탭 문자가 섞여 있었다(`"상해신남양앙리교육과기지분유한공사\t"`)
+— 파싱 시 trim이 필요하다는 뜻.
+
+**`corp_name`은 유일하지 않다** — 5,516개 이름이 2건 이상 중복돼(총 13,382행) 전체의
+11.3%가 동명이인이다. corp_name으로 회사를 매칭/병합하면 절대 안 된다는 걸 재확인.
+
+**기존 DB(1,044개 회사, 2026-07-26 기준 - 스케줄러가 계속 돌아 3단계 완성 시점의
+558건보다 늘어난 상태)와 대조**: corp_code 기준으로 전체가 corpCode.xml에 그대로
+존재했다(누락 0건, stock_code 불일치도 0건). **`corp_name` 불일치를 1건 발견했다**
+(`corp_code=01065013`: 기존 DB "우정바이오" ↔ corpCode.xml "콜마바이오텍") — 실제
+상호변경으로 보이며, "corp_name/stock_code는 corpCode.xml 값으로 덮어쓴다"는 설계
+결정이 실익이 있다는 걸 실측 사례로 증명했다.
+
+`modify_date`는 8자리(`YYYYMMDD`) 고정, 최댓값이 `20260724`(실측일 이틀 전)라 DART가
+최근까지 계속 갱신하는 살아있는 데이터임을 확인했다.
+
+### 2-12. "미리 최적화"가 실측에서 뒤집힌 사례 — pg_trgm GIN 인덱스가 자동완성에 도움이 안 됨
+
+2026-07-27, corpCode.xml 확대(118,535건 적재) 직후 회사명 자동완성 성능을 검증하다가
+발견했다. 설계 단계에서는 "10만 건 규모의 `LIKE '%q%'` 검색은 인덱스 없이는 느려질
+것"이라는 추론만으로 `pg_trgm` GIN 인덱스(`idx_companies_corp_name_trgm`)를 먼저
+추가했는데(V4), 실측 결과 세 가지 이유로 이 판단이 틀렸다는 게 드러났다.
+
+**원인 1 — Spring Data JPA `ContainingIgnoreCase`가 `upper()`로 감싼다**: 실제 Hibernate
+SQL 로그(`logging.level.org.hibernate.SQL: DEBUG`로 일시적으로 확인)를 보면 다음과 같이
+생성된다.
+```sql
+select ... from companies where upper(corp_name) like upper(?) escape '\' order by corp_name fetch first ? rows only
+```
+인덱스는 `corp_name` 원본 컬럼에 걸려 있는데, predicate는 `upper(corp_name)`이라는 별개의
+표현식이다. `EXPLAIN ANALYZE`는(`enable_seqscan = off`로 강제해도) 항상 Seq Scan을
+선택했다 — 이 predicate와 매칭되는 인덱스 기반 플랜 자체가 존재하지 않는다는 뜻이다.
+```
+Seq Scan on companies (actual time=0.012..25.996 rows=275 loops=1)
+  Filter: (upper(corp_name) ~~ '%삼성%')
+  Rows Removed by Filter: 118260
+Execution Time: 27.969 ms
+```
+
+**원인 2 — 한글 단문 검색은 trigram 선택도가 낮다**: `upper()` 없이 순수 `corp_name
+ILIKE '%삼성%'`로 바꾸면 인덱스가 기술적으로는 매칭되지만(`enable_seqscan=off`로 강제
+시 `Bitmap Index Scan on idx_companies_corp_name_trgm` 확인됨), 후보로 119,200건(전체
+118,535건과 맞먹는 규모)을 반환한 뒤 118,260건을 재확인(recheck) 단계에서 걸러냈다.
+"삼성" 같은 2글자 한글 검색어는 trigram(3글자 단위 조각) 개수 자체가 너무 적어 후보를
+거의 못 좁힌다는 뜻이다. 결과적으로 강제 인덱스 스캔이 **214.705ms로 Seq
+Scan(27.969ms)보다 7배 이상 느렸다** — 플래너가 자동으로 Seq Scan을 고른 게 우연이
+아니라 실제로 더 합리적인 선택이었다.
+
+**원인 3 — 118,535건 규모에서 Seq Scan 자체가 이미 충분히 빠르다**: `upper()` 버전
+27.969ms, 순수 `ILIKE` 버전 42.568ms(강제 없이 자연 선택 시) — 자동완성 UX 기준으로
+체감 지연이 없는 수준이다.
+
+**대응**: `idx_companies_corp_name_trgm` 인덱스를 Flyway V5로 제거했다. "안 쓰이는데
+존재하는" 인덱스는 쓰기 비용만 발생시키고, 나중에 코드를 보는 사람이 "이 인덱스가 왜
+있는데 안 쓰이지"라고 혼란스러워할 여지만 남기기 때문이다. `pg_trgm` 확장 자체는
+유지했다 - 설치 비용이 없고, 나중에 실제로 유효한 패턴(더 긴 검색어, 영문 회사명,
+다른 컬럼 등)이 실측으로 확인되면 인덱스만 다시 추가하면 된다.
+
+**교훈 — "확정된 문제"라고 판단해 미리 최적화한 것이 실측에서 뒤집힌 사례**: 이
+프로젝트가 지금까지 지켜온 원칙("먼저 실측하고 그 근거로 설계한다" - Nori 사전을
+`_analyze` API로 먼저 테스트한 2-8, HNSW 인덱스를 `EXPLAIN`으로 실측 검증한 하이브리드
+검색 사례 등)의 **반대 방향** 사례로 남겨둔다. 참고로 HNSW 인덱스는 지금은 플래너가
+안 쓰지만 predicate 자체는 유효하게 매칭되고(`<=>` 연산자로 정렬 시 강제하면 정확히
+잡힘) 데이터가 늘면 자연히 쓰이게 될 "아직 이른" 케이스인 반면, 이번 `pg_trgm`은
+(a) 실제 쿼리(predicate)와 애초에 안 맞고 (b) 설령 맞춰도 도메인 데이터(한글 단문
+검색어) 특성상 선택도가 낮아 오히려 손해라는 점에서 성격이 다르다 - "나중엔 쓰일
+인덱스"가 아니라 "이 형태로는 앞으로도 안 쓰일 인덱스"였다. "10만 건 LIKE 검색은
+느릴 것"이라는 추론이 그 자체로는 합리적으로 보였지만, (a) ORM이 실제로 생성하는
+SQL의 정확한 형태, (b) 도메인 데이터(한글 단문 검색어)의 실제 특성, (c) 이 데이터
+규모에서 Seq Scan의 실제 속도라는 세 가지 - 전부 실측 없이는 알 수 없는 요인이었다.
+**인덱스는 "느릴 것 같다"는 추론이 아니라 실제 쿼리 로그 + `EXPLAIN ANALYZE`로
+필요성을 확인한 뒤에 추가해야 한다** - 나중에 비슷한 최적화를 고려할 때 이 사례를
+먼저 참고할 것.
+
 ## 3. 청킹 전략 제안 (RAG용)
 
 1. **문서 유형(`report_nm`)별로 처리 전략을 분기한다.**
