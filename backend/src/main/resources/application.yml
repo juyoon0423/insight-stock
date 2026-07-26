@@ -29,6 +29,13 @@ dart:
     fixed-delay-ms: 600000
     batch-size: 20
 
+corp-code-sync:
+  collector:
+    # 118,535건 전체를 매번 다시 훑는 무거운 배치 - 다른 collector들처럼 검증 전엔 꺼둔다.
+    enabled: false
+    # 하루 1회, 새벽 3시(KST) - list/document(10분 간격)와 달리 전체 스냅샷이라 자주 돌 필요 없음.
+    cron: "0 0 3 * * *"
+
 chunking:
   # 이 값 미만이면 구조 분할 없이 통째로 1개 청크로 저장한다.
   whole-document-char-threshold: 2000
