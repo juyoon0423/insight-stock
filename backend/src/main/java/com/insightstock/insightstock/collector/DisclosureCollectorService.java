@@ -93,6 +93,7 @@ public class DisclosureCollectorService {
 
     private Company findOrCreateCompany(DartDisclosureItem item) {
         return companyRepository.findByCorpCode(item.corpCode())
+                .map(company -> backfillCorpClsIfMissing(company, item))
                 .orElseGet(() -> {
                     Company company = new Company();
                     company.setCorpCode(item.corpCode());
@@ -101,6 +102,17 @@ public class DisclosureCollectorService {
                     company.setCorpCls(item.corpCls());
                     return companyRepository.save(company);
                 });
+    }
+
+    // corpCode.xml로만 채워진 회사는 corp_cls가 null이다(corpCode.xml에 없는 필드 -
+    // dart-findings.md 2-11). list API가 실제 공시로 그 회사를 처음 만나는 시점에
+    // corp_cls를 알게 되므로, 이미 존재하는 회사라도 null이면 이번에 채워 넣는다.
+    private Company backfillCorpClsIfMissing(Company company, DartDisclosureItem item) {
+        if (company.getCorpCls() == null) {
+            company.setCorpCls(item.corpCls());
+            return companyRepository.save(company);
+        }
+        return company;
     }
 
     private String blankToNull(String value) {
