@@ -1,0 +1,13 @@
+-- V4에서 추가한 pg_trgm GIN 인덱스(idx_companies_corp_name_trgm)를 제거한다.
+-- 실측(dart-findings.md 2-12)으로 세 가지가 드러났다:
+--   1) Spring Data JPA의 ContainingIgnoreCase가 upper(corp_name) LIKE upper(?)로 번역돼,
+--      원본 corp_name 컬럼에 건 이 인덱스와 predicate가 애초에 매칭되지 않는다
+--      (enable_seqscan=off로 강제해도 Seq Scan만 선택됨 - 쓸 수 있는 플랜 자체가 없음).
+--   2) upper() 없는 순수 ILIKE로 바꿔도, "삼성" 같은 한글 2글자 검색어는 trigram
+--      선택도가 낮아 인덱스가 전체에 가까운 후보(119,200/118,535건)를 반환해
+--      Seq Scan(27.969ms)보다 오히려 느렸다(강제 시 214.705ms).
+--   3) 118,535건 규모에서 Seq Scan 자체가 이미 27~42ms로 자동완성에 충분히 빠르다.
+-- "안 쓰이는데 존재하는" 인덱스는 쓰기 비용만 발생시키므로 제거한다.
+-- pg_trgm 확장 자체는 유지한다 - 설치 유지 비용이 없고, 나중에 실제로 유효한 패턴
+-- (더 긴 검색어, 다른 컬럼 등)이 실측으로 확인되면 다시 인덱스만 추가하면 된다.
+DROP INDEX idx_companies_corp_name_trgm;
