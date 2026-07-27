@@ -29,6 +29,7 @@ public class EvaluationQuerySetLoader {
         return new GroundTruthQuery(
                 json.id(),
                 json.category(),
+                json.theme(),
                 json.query(),
                 json.lexicalMismatch(),
                 json.mismatchNote(),
@@ -42,10 +43,12 @@ public class EvaluationQuerySetLoader {
     private record QuerySetFile(List<QueryCaseJson> queries) {
     }
 
+    // category/theme 둘 다 optional - 파일에 없으면 null(GroundTruthQuery 참고).
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record QueryCaseJson(
             String id,
             QueryCategory category,
+            String theme,
             String query,
             boolean lexicalMismatch,
             String mismatchNote,

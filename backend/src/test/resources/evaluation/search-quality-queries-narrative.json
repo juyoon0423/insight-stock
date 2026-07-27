@@ -1,0 +1,69 @@
+{
+  "_readme": [
+    "정형 서식 벤치마크(search-quality-queries.json)와 짝을 이루는 서술형 문서 벤치마크.",
+    "정형 벤치마크가 corp_code+report_nm 유일성 위주로 뽑히다 보니 chunk_source가",
+    "WHOLE_DOCUMENT(라벨+숫자 위주 정형 서식)로 쏠렸던 선택 편향을 보완하기 위해,",
+    "사업보고서/투자설명서/합병결정 등 실제 서술형(SECTION/SLIDING_WINDOW) 문서에서",
+    "정답을 골랐다.",
+    "정답 판정 방식은 정형 벤치마크와 동일 - groundTruth.rceptNo 하나로 고정, report_nm",
+    "문자열 재매칭 없음. 서술형은 report_nm이 회사당 여러 번(정정 포함) 반복되는 경우가",
+    "있어(예: 알에프텍 증권신고서(합병) 4건) 정형 벤치마크처럼 report_nm 유일성으로",
+    "후보를 거르지 않고, 사람이 실제 원문을 읽고 특정 rcept_no 1건을 정답으로 확정했다.",
+    "테마 3종(차입금/매출·실적/합병목적) x 조건 2종(EXACT/MISMATCH) = 6개로 구성 -",
+    "같은 테마 안에서 어휘 조건만 다르게 짝을 지어, '문서 유형(서술형)'과 '어휘 조건'",
+    "중 어느 쪽이 실제 변수인지 분리해서 볼 수 있게 했다. 4번째 테마(위험요소/최대주주",
+    "변경)도 시도했지만 검색어가 너무 일반적이라 여러 회사에 동일하게 걸리는",
+    "보일러플레이트만 나와(dart-findings.md 2-10과 같은 패턴) 억지로 채우지 않고 뺐다.",
+    "theme 필드로 정형 벤치마크의 category(KEYWORD_FRIENDLY/EVENT)를 대체한다."
+  ],
+  "queries": [
+    {
+      "id": "N1",
+      "theme": "차입금",
+      "query": "계양전기의 2026년 1분기말 단기차입금 규모와 주요 차입처는?",
+      "lexicalMismatch": false,
+      "mismatchNote": null,
+      "groundTruth": { "corpCode": "00102618", "corpName": "계양전기", "reportNm": "[기재정정]투자설명서", "rceptNo": "20260724000615" }
+    },
+    {
+      "id": "N2",
+      "theme": "차입금",
+      "query": "기도산업이 최근 은행 등에서 빌린 돈의 규모는 어떻게 변화했나요?",
+      "lexicalMismatch": true,
+      "mismatchNote": "차입금 -> 빌린 돈 (2026-07-23 하이브리드 검증 때 이미 벡터 기여를 확인한 질의 재사용)",
+      "groundTruth": { "corpCode": "00229085", "corpName": "기도산업", "reportNm": "투자설명서", "rceptNo": "20260721000046" }
+    },
+    {
+      "id": "N3",
+      "theme": "매출·실적",
+      "query": "더블유게임즈의 2025년 연간 매출액은 얼마인가?",
+      "lexicalMismatch": false,
+      "mismatchNote": null,
+      "groundTruth": { "corpCode": "01010110", "corpName": "더블유게임즈", "reportNm": "[기재정정]사업보고서 (2025.12)", "rceptNo": "20260724000595" }
+    },
+    {
+      "id": "N4",
+      "theme": "매출·실적",
+      "query": "하이드로리튬이 작년보다 돈을 얼마나 벌었는지, 사업부문별로 어떻게 다른가?",
+      "lexicalMismatch": true,
+      "mismatchNote": "매출액 -> 돈을 벌다 (전체는 감소, 리튬 사업만 증가라는 반전이 있어 정답이 명확함)",
+      "groundTruth": { "corpCode": "00527491", "corpName": "하이드로리튬", "reportNm": "[기재정정]사업보고서 (2025.12)", "rceptNo": "20260724000378" }
+    },
+    {
+      "id": "N5",
+      "theme": "합병목적",
+      "query": "동아쏘시오홀딩스가 동아제약을 합병하는 목적은 무엇인가?",
+      "lexicalMismatch": false,
+      "mismatchNote": null,
+      "groundTruth": { "corpCode": "00116824", "corpName": "동아쏘시오홀딩스", "reportNm": "주요사항보고서(회사합병결정)", "rceptNo": "20260723000549" }
+    },
+    {
+      "id": "N6",
+      "theme": "합병목적",
+      "query": "파라택시스코리아가 파라택시스이더리움과 하나로 합치려는 이유는 무엇인가?",
+      "lexicalMismatch": true,
+      "mismatchNote": "합병 -> 하나로 합치다",
+      "groundTruth": { "corpCode": "01227039", "corpName": "파라택시스코리아", "reportNm": "[기재정정]주요사항보고서(회사합병결정)", "rceptNo": "20260720000352" }
+    }
+  ]
+}
