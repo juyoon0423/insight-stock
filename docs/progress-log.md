@@ -1961,3 +1961,123 @@ dev` 순서로 띄우면 된다.
 (`progress-log.md`)로 서술형 히스토리 전체를 그대로 옮기고 `progress.md`는
 현재 상태 요약/다음 세션 시작점/논의거리/고정 정보만 남기는 얇은 문서로
 재작성했다(내용 삭제 없음 - 전부 이 문서에 보존).
+
+## 7. 2026-07-27 세션 — 4단계(알림) 프론트엔드 완성 (헤더 배지 + 드롭다운, 이로써 4단계 전체 완료)
+
+이전 세션(위 6절)에서 백엔드만 완성됐던 4단계(알림)의 프론트엔드를 구현해
+**4단계 전체(백엔드+프론트엔드)를 완성**했다. 코드 작성 전에 기존 패턴부터
+실제로 확인하라는 지시에 따라 `AuthStatusBar`(배치 위치)/`WatchlistPage`
+(authFetch 기반 API 호출, 로딩/에러 처리, 타입 정의 위치)를 먼저 읽고 그
+컨벤션을 그대로 따랐다.
+
+**시작 전 확인에서 막힌 지점 두 가지를 먼저 사용자에게 물었다(임의로 정하지
+않음)**: ①알림 목록 UI를 드롭다운/별도 페이지 중 뭐로 할지, ②"클릭 시 해당
+공시로 이동"에 쓸 라우트가 이 프로젝트에 아예 없다는 것 - 기존 패턴
+(`SourceCard`)은 백엔드가 주는 `dartUrl`로 외부 DART 링크를 여는 방식인데,
+`NotificationItemResponse`엔 그 필드가 없어 프론트만으로는 이동시킬 수
+없었다. 사용자가 ①드롭다운, ②`SourceRef`와 동일한 필드명(`rceptNo`/
+`dartUrl`)으로 백엔드에 먼저 추가를 지시해, 그 순서(백엔드 수정 → 커밋 →
+curl 검증 → 프론트 작업)대로 진행했다.
+
+- **`NotificationItemResponse`에 `rceptNo`/`dartUrl` 추가** (커밋 `debf781`) —
+  기존 `rag.dto.SourceRef`(`rceptNo, corpName, reportNm, sectionTitle,
+  dartUrl`)와 정확히 같은 필드명으로 맞추고, `dart.DartUrls.viewerUrl()`
+  (이미 `AnswerService`/`HybridSearchService`가 재사용 중이던 유틸)을 그대로
+  다시 써서 `SourceCard`가 여는 것과 같은 형식의 링크를 만들었다.
+  `disclosure`는 `NotificationRepository.
+  findByUserIdWithDisclosureAndCompany()`가 이미 fetch join으로 가져오고
+  있어 컨트롤러의 `toItemResponse()`에 필드 2개만 추가하면 됐다(리포지토리/
+  서비스 로직 변경 없음). 실제 서버로 검증: 새 테스트 유저 가입(id=22) →
+  psql로 notification 픽스처 1건 삽입(disclosure_id=2, 파라택시스코리아)
+  → `GET /notifications` 응답에 `"rceptNo":"20260720000352"`,
+  `"dartUrl":"https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260720000352"`가
+  정확히 채워짐을 curl로 확인. 검증용 유저/알림은 psql로 정리,
+  `./gradlew test` 회귀 통과.
+
+- **CORS 허용 메서드에 `PATCH` 추가** (커밋 `06b1b00`) — 프론트 Playwright
+  검증 중 알림 항목을 클릭했더니 콘솔에 `"Access to fetch at
+  '.../notifications/44/read' ... blocked by CORS policy: ... No
+  'Access-Control-Allow-Origin' header"`가 찍혔다. 원인은 `WebConfig.
+  corsConfigurationSource()`가 `setAllowedMethods(List.of("GET", "POST",
+  "DELETE"))`로 고정돼 있어 이번에 새로 쓴 `PATCH`가 목록에 없었던 것 -
+  **3단계 WatchList 화면 구현 때 `DELETE`가 빠져 있었던 것과 완전히 같은
+  유형의 재발**(당시엔 삭제 버튼을 눌러도 화면에서 항목이 안 사라지는
+  증상, 이번엔 읽음 처리가 조용히 실패하는 증상 - 둘 다 curl 검증으로는
+  전혀 안 보이고 브라우저로 직접 확인해야만 드러난다는 특징도 동일).
+  실측으로 재현/수정을 검증했다: 수정 전 psql로 확인한
+  `notification.is_read`가 클릭 후에도 `false`로 그대로였고(요청 자체가
+  브라우저에서 막혀 서버까지 도달하지 못함), `"PATCH"`를 허용 목록에
+  추가하고 백엔드를 재시작한 뒤 같은 시나리오를 재실행하니 콘솔 에러 0건 +
+  `is_read=true`로 실제 반영됨을 확인했다.
+
+- **알림 프론트엔드 — 헤더 배지 + 드롭다운 목록** (커밋 `7ccb2f4`) —
+  `components/NotificationBell.tsx`를 `AuthStatusBar`의 "관심 목록" 링크
+  옆에 배치했다. 로그인 상태(`useSession().status === "authenticated"`)일
+  때만 렌더링되고, 그 외에는 컴포넌트 자체가 `null`을 반환해 배지/드롭다운이
+  DOM에 아예 존재하지 않는다. `GET /unread-count`를 폴링해 배지 숫자를
+  갱신하는데(전달 방식 A: 화면 내 배지+목록, 폴링 - 이전 세션 4단계 설계
+  결정 그대로, 근거는 위 3절 12번), 폴링 간격은 하드코딩하지 않고
+  `lib/notificationConfig.ts`의 `NOTIFICATION_POLL_INTERVAL_MS`(30초) 상수
+  하나로 분리했다 - 이 프로젝트에 지금까지 "설정값 전용 파일" 사례가 없어서
+  (`CompanyAutocomplete`의 `DEBOUNCE_MS`, `SearchPage`의 `TOP_K`는 전부
+  컴포넌트 파일 안에 인라인 상수) 이번이 첫 사례다. 벨을 클릭하면 `GET
+  /notifications`로 목록을 불러와 회사명/`reportNm`/등록 시각을 보여주고,
+  안 읽음 항목은 파란 점 + 옅은 파란 배경으로 구분한다. 항목을 클릭하면
+  `PATCH .../{id}/read`를 호출하면서 동시에 `window.open(item.dartUrl,
+  "_blank", ...)`로 DART 원문을 새 탭에 연다(`SourceCard`와 동일한 방식) -
+  로컬 상태를 먼저 낙관적으로 갱신해 이미 읽은 항목을 다시 클릭해도 안전하게
+  동작한다(백엔드가 idempotent이므로 그대로 신뢰).
+
+  effect 본문에서 동기적으로 `setState`를 호출하면 안 된다는 이 프로젝트의
+  기존 lint 규칙(`react-hooks/set-state-in-effect`, 3단계 WatchList 구현
+  때 이미 겪은 것)에 이번에도 걸렸다 - 처음엔 로그인 상태가 아닐 때 폴링
+  effect 안에서 `setUnreadCount(0)`으로 되돌리려 했는데, 이 컴포넌트는
+  비로그인 시 애초에 `null`을 렌더링해 배지 자체가 안 보이므로 그 reset이
+  불필요하다는 걸 깨닫고 아예 제거해 해결했다(단순히 위치를 옮기는 대신
+  "이 setState가 실제로 필요한가"부터 재검토한 사례).
+
+  **Playwright로 실제 브라우저 검증(가입 유저 1명 + psql 픽스처 2건, 폴링은
+  검증 속도를 위해 일시적으로 30초 → 3초로 낮췄다가 확인 후 원복)**:
+  1. 로그인 전: `button[aria-label="알림"]` 개수 0 - 벨 자체가 안 보임.
+  2. 로그인 직후: 배지 "2"(픽스처 건수와 일치).
+  3. 드롭다운 열기: 항목 2개, 첫 항목 텍스트가 "파라택시스코리아 /
+     [기재정정]주요사항보고서(회사합병결정) / 26. 7. 27. 오후 5:05"로
+     정확히 표시됨.
+  4. **폴링 실동작 확인**: 7초 대기 동안 `GET /unread-count` 요청이 4회
+     발생(3초 간격과 일치) - 네트워크 요청을 실제로 가로채 카운트.
+  5. 항목 클릭 → 새 탭 URL이
+     `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260720000352`로
+     정확히 열림.
+  6. **낙관적 갱신과 폴링의 경합을 실측으로 발견하고 자체 해소를 확인** -
+     첫 실행에서는 클릭 500ms 후 배지가 여전히 "2"로 보였다(다음 폴링
+     결과가 아직 반영되기 전, 클릭 직전에 이미 날아가 있던 이전 poll
+     응답이 늦게 도착해 낙관적 감소를 덮어썼을 가능성). 곧바로 3.5초 더
+     대기(폴링 한 주기)한 뒤 재확인하는 스텝을 추가해 재실행하니 클릭
+     500ms 후에도, 3.5초 후에도 배지가 "1"로 정확했다 - 두 번째 실행에서는
+     경합이 재현되지 않아, 폴링 응답 타이밍에 따라 순간적으로 어긋날 수는
+     있지만 다음 폴링 주기(운영값 30초) 안에는 항상 실제 서버 상태로
+     수렴하는 것으로 판단했다(배지 하나의 일시적 오차라 별도 동기화 로직
+     추가는 하지 않기로 함 - 다음 세션 논의거리로 기록하지 않고 그냥 알려진
+     특성으로만 남김, 우선순위가 낮다고 판단).
+  7. 드롭다운을 다시 열어 스크린샷으로 최종 확인: 클릭한 항목(실행마다
+     픽스처 순서가 달라 실제 회사명은 매번 달랐음)은 파란 점/배경이
+     사라지고, 클릭하지 않은 나머지 1건은 그대로 안 읽음 표시 유지. 콘솔
+     에러 0건(CORS 버그 수정 후 재실행 기준), `npx tsc --noEmit`/`npm run
+     lint` 모두 통과.
+
+  검증에 쓴 임시 가입 유저와 notification 픽스처는 psql로 정리했고, 실제
+  운영 데이터(`notification` 4건, `users` 4명)는 그대로 유지됨을 재확인했다.
+
+**이로써 4단계(알림)가 백엔드+프론트엔드 전체 완성됐다.**
+
+**로컬 개발 환경 메모 - IntelliJ Run Configuration은
+`SPRINGDOTENV_DIRECTORY`를 직접 챙겨야 한다**: `backend/build.gradle`을
+보면 `test`/`manualTest`/`bootRun` 세 Gradle 태스크 전부에 `environment
+"SPRINGDOTENV_DIRECTORY", ".."`가 박혀 있다(`.env`가 `backend/`가 아니라
+프로젝트 루트에 있어서, spring-dotenv가 한 단계 위 디렉터리를 보게 하는
+설정). Gradle 태스크로 실행하면 이 환경변수가 자동으로 따라가지만,
+IntelliJ에서 `InsightStockApplication`을 "Application" Run Configuration으로
+직접 실행하면(Gradle을 거치지 않으므로) 이 설정이 적용되지 않아 `.env`를
+못 찾는다 - Run Configuration의 Environment variables에
+`SPRINGDOTENV_DIRECTORY=..`를 수동으로 추가해야 한다. 새 개발 환경/팀원
+온보딩 시 헷갈릴 수 있어 기록해둔다.

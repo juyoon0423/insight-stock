@@ -8,31 +8,40 @@
 
 ## 현재 상태 요약
 
-- **데이터 규모**: `companies` 118,535건 / `disclosures` 4,390건 / `chunks`
+- **데이터 규모**: `companies` 118,535건 / `disclosures` 4,485건 / `chunks`
   173,035건(전량 임베딩 완료, `text-embedding-3-small`) / `users` 4명 /
-  `watchlist` 2건 / `notification` 4건.
+  `watchlist` 3건 / `notification` 4건.
 - **완성된 기능**: DART 공시 수집 → 원문 파싱 → 청킹 → ES 색인 → 임베딩 →
   하이브리드 검색(BM25+벡터+RRF) → RAG 답변 생성 → Controller/API(백엔드
   MVP), 프론트엔드 1~2단계 화면(질문답변 / RRF 시각화), 3단계 인증(JWT)+
   WatchList(백엔드+프론트엔드), corpCode.xml 전체 회사 목록 확대, 검색 품질
-  정식 측정(정형+서술형 두 벤치마크, 결론까지 완료), **4단계 알림 — 백엔드
-  전체 완성**(스키마 / 감지 서비스+스케줄러 / 조회·읽음 API, 프론트엔드는
-  미착수).
+  정식 측정(정형+서술형 두 벤치마크, 결론까지 완료), **4단계 알림 — 백엔드+
+  프론트엔드 전체 완성**(스키마 / 감지 서비스+스케줄러 / 조회·읽음 API /
+  헤더 배지+드롭다운 목록, Playwright 실제 브라우저 검증까지 완료).
 
 ## 다음 세션 시작점
 
-**4단계(알림) 백엔드 완료. 다음은 프론트엔드(헤더 배지 + 알림 목록)다.**
+**4단계(알림) 전체(백엔드+프론트엔드) 완료.** progress-log.md의 원래 추천
+순서("데이터 규모 확대 → 검색 품질 측정 → 4단계 알림 → AWS 배포")를 보면
+앞 세 개가 전부 끝났으니, **다음 우선순위는 AWS 배포 + 무중단 배포**로
+판단된다 - 기능이 갖춰진 뒤 마지막에 배포로 마무리한다는 원래 계획 그대로.
+다만 이건 이 세션의 판단일 뿐이니 시작 시 사용자와 다시 확인할 것.
 
-- 백엔드: `notification/`(`NotificationDetectionService`+`Scheduler`,
+- 알림 기능(백엔드+프론트엔드)은 완전히 끝났고 다시 조사할 필요 없음:
+  `notification/`(`NotificationDetectionService`+`Scheduler`,
   `NotificationService`), `api/NotificationController`(`GET
   /api/v1/notifications`, `GET /api/v1/notifications/unread-count`, `PATCH
-  /api/v1/notifications/{id}/read`) 전부 완성 + 실 DB/실 서버 검증 완료 -
-  다시 조사할 필요 없이 그대로 갖다 쓰면 됨. `notification.collector.
-  enabled: false`(기본 비활성화, 다른 collector와 동일 관례) 유지 중.
-- 프론트엔드에서 할 일: 로그인 상태일 때 헤더에 미읽음 배지(폴링 방식 -
-  4단계 설계 결정, 근거는 로그 참고), 알림 목록 페이지/드롭다운, 클릭 시
-  읽음 처리 + 해당 공시로 이동. `AuthStatusBar`(전역 로그인 상태 바) 옆에
-  자연스럽게 배치하는 게 기존 패턴과 맞음.
+  /api/v1/notifications/{id}/read`), 프론트 `components/NotificationBell.tsx`
+  (헤더 배지+드롭다운, `AuthStatusBar` 옆에 배치) 전부 실 DB/실 서버/실
+  브라우저(Playwright) 검증 완료. `notification.collector.enabled: false`
+  (기본 비활성화, 다른 collector와 동일 관례) 유지 중.
+- **AWS 배포**를 다음으로 진행한다면: 인프라(RDS/Elasticsearch 서비스 또는
+  자체 호스팅, 백엔드 컨테이너 배포), 프론트(Vercel 또는 별도 정적/서버
+  호스팅), 환경변수/CORS(`cors.allowed-origins`)를 배포 도메인 기준으로
+  교체, `WatchList` 백엔드 설계 논의에서 이미 짚었던 "프론트/백엔드가 다른
+  도메인일 때 쿠키/CORS 함의"(위 progress-log.md 1절 토큰 저장 방식 논의
+  참고)까지 고려 - 설계안부터 먼저 제안하고 사용자 확인 후 진행할 것(이
+  프로젝트의 기존 작업 방식 그대로).
 - 시작 순서: `docker compose up -d`(postgres/elasticsearch healthy 확인)
   → `cd backend && ./gradlew bootRun` → `cd frontend && npm run dev`.
   `.env`에 `DART_API_KEY`/`POSTGRES_USER`/`POSTGRES_PASSWORD`/
@@ -40,7 +49,6 @@
 
 ## 다음 세션 논의거리 (우선순위 미정)
 
-- **4단계 알림 프론트엔드** — 위 "다음 세션 시작점" 참고, 다음 세션 최우선.
 - **notification 리스트 페이지네이션 미검토** — `GET /notifications`가
   현재 전체를 한 번에 반환한다. 알림이 많아지면(watchlist 회사 수 × 공시
   빈도) 필요할 수 있음, 아직 실측 안 함.
@@ -76,7 +84,27 @@
   재논의 트리거만 존재** — 표본 부족 / 분기 기준 불명확 / 질의 시점에 답
   문서 유형을 모르는 근본 난제 때문에 지금은 구현 안 하기로 함. 더 큰
   표본으로 재확인되거나 `/answers` 실사용에서 품질 문제가 관찰되면 재논의.
-- **AWS 배포 + 무중단 배포** — 아직 착수 안 함.
+- **AWS 배포 + 무중단 배포** — 아직 착수 안 함. 위 "다음 세션 시작점" 참고,
+  이 세션 판단으로는 다음 우선순위.
+- **`WebConfig` CORS 허용 메서드 수동 관리 구조 — 같은 종류의 버그가 두 번
+  재발함** — 3단계 WatchList 때 `DELETE` 누락, 이번 4단계 알림 때 `PATCH`
+  누락, 둘 다 새 HTTP 메서드를 쓰는 API를 추가할 때 `setAllowedMethods(...)`
+  갱신을 깜빡해서 생겼고 curl로는 안 잡히고 브라우저로만 드러났다(상세는
+  progress-log.md 3절/7절). 근본 해결(예: 컨트롤러에서 실제 사용 중인 HTTP
+  메서드를 스캔해 CORS 설정에 자동 반영하는 구조, 혹은 최소한 "새 메서드
+  추가 시 CORS 갱신" 체크리스트화)을 고려해볼 만하지만, 우선순위는 낮음 -
+  지금까지 두 번 다 발견 즉시 한 줄 수정으로 해결됐고 피해도 없었으니
+  재발할 때마다 대응해도 무방하다는 게 현재 판단.
+- **로컬 개발 환경 메모 — IntelliJ Run Configuration은
+  `SPRINGDOTENV_DIRECTORY`를 직접 챙겨야 함** — `backend/build.gradle`의
+  `test`/`manualTest`/`bootRun` 태스크는 전부 `environment
+  "SPRINGDOTENV_DIRECTORY", ".."`가 박혀 있어(`.env`가 `backend/`가 아니라
+  프로젝트 루트에 있어서) Gradle로 실행하면 자동으로 `.env`를 찾지만,
+  IntelliJ에서 `InsightStockApplication`을 "Application" Run Configuration
+  으로 직접 실행하면(Gradle을 안 거치므로) 이 설정이 안 먹어 `.env`를 못
+  찾는다 - Run Configuration의 Environment variables에
+  `SPRINGDOTENV_DIRECTORY=..`를 수동으로 추가해야 한다. 새 개발 환경/팀원
+  온보딩 시 참고(할 일이라기보다 참고용 메모).
 
 ## 개발 원칙 (요약, 상세는 CLAUDE.md 참고)
 
