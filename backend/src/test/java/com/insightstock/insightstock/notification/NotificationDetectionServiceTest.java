@@ -26,6 +26,14 @@ import org.springframework.transaction.annotation.Transactional;
 // ChunkingManualIT류(BACKFILL_APPROVED 게이트로 실수 실행을 막는 방식)와 달리 실제
 // 데이터를 영구적으로 남기지 않는다 - 외부 유료 API 호출도 없어 @Tag("manual") 없이
 // 기본 test에 포함한다.
+//
+// 감지 쿼리는 watchlist 전체를 대상으로 하는 글로벌 배치라, 기존 watchlist 행을 지우지
+// 않으면 이 테스트가 로컬 dev DB에 이미 있는 실제 watchlist(다른 회사/사용자)까지 함께
+// 매칭 대상으로 삼는다 - 결과 자체는 user_id로 필터링해 틀리지 않지만, notification_id_seq를
+// 실제 데이터만큼 불필요하게 소모하고(Postgres 시퀀스는 ON CONFLICT/ROLLBACK과 무관하게
+// 항상 전진한다 - 실측 확인함) 다른 환경(예: watchlist가 비어있는 신규 DB)에서 결과 건수가
+// 달라질 여지를 남긴다. 테스트 트랜잭션 안에서만 유효한 삭제(끝나면 롤백되어 실제 데이터는
+// 그대로)로 기존 watchlist를 비워, 이 테스트가 만든 픽스처만 감지 대상이 되도록 격리한다.
 @SpringBootTest
 @Transactional
 class NotificationDetectionServiceTest {
@@ -53,6 +61,11 @@ class NotificationDetectionServiceTest {
 
     @Test
     void detectsOnlyDisclosuresAfterWatchlistRegistration() {
+        // 이 테스트 트랜잭션 범위 안에서만 유효 - 끝나면 @Transactional이 롤백하므로 실제
+        // watchlist는 그대로 남는다. notification은 watchlist가 아니라 user/disclosure를
+        // FK로 참조하므로 이 삭제로 기존 notification 행이 cascade로 지워지지 않는다.
+        jdbcTemplate.update("DELETE FROM watchlist");
+
         Company company = persistCompany();
         User user = persistUser();
         Watchlist watchlist = persistWatchlist(user, company);
