@@ -1,0 +1,114 @@
+{
+  "_readme": [
+    "검색 품질 측정(키워드/벡터/하이브리드 Recall@K, MRR)용 정식 질의 세트.",
+    "정답 판정 키는 groundTruth.rceptNo(공시 1건)이다 — corpCode/reportNm은 이 질의를 만들 때",
+    "실제 DB를 조회해 후보를 찾는 데 쓴 탐색 도구일 뿐, 평가 로직은 report_nm 문자열을",
+    "다시 매칭하지 않는다. '이 청크의 disclosure_id가 rceptNo와 같은가'만 본다.",
+    "그래서 [기재정정] 같은 report_nm 표기 변형은 채점에 영향을 주지 않는다.",
+    "판정 단위는 공시(disclosure) 레벨이다 — 같은 disclosure 안의 어느 청크가 top-K에",
+    "걸리든 hit으로 인정한다(청크 단위 아님, top-K 중복 제거 정책과 정합).",
+    "corpCode/corpName/reportNm 필드는 질의 구성 근거를 남기기 위한 기록용이며,",
+    "각 조합이 이 시점 DB에서 정확히 1건(exact_report_nm_match=1)임을 SQL로 확인했다.",
+    "category: KEYWORD_FRIENDLY(고유명사형, 회사명/숫자 그대로 인용) / EVENT(사건형, 특정 사건 확인).",
+    "lexicalMismatch: 질의 어휘가 공시 원문 어휘와 의도적으로/자연스럽게 다른 경우 true",
+    "(벡터 기여를 보기 위한 대조군). false는 순수 키워드 유리 baseline."
+  ],
+  "queries": [
+    {
+      "id": "Q1",
+      "category": "KEYWORD_FRIENDLY",
+      "query": "스트라드비젼이 Aptiv Global Operations Limited와 맺은 소프트웨어 공급계약의 계약금액은 얼마인가?",
+      "lexicalMismatch": false,
+      "mismatchNote": "약함 - report_nm은 '단일판매'공급계약체결이지만 질의는 생략",
+      "groundTruth": { "corpCode": "01370517", "corpName": "스트라드비젼", "reportNm": "단일판매ㆍ공급계약체결", "rceptNo": "20260722900866" }
+    },
+    {
+      "id": "Q2",
+      "category": "KEYWORD_FRIENDLY",
+      "query": "신한지주가 소각하기로 한 보통주식 수와 소각예정금액은?",
+      "lexicalMismatch": false,
+      "mismatchNote": null,
+      "groundTruth": { "corpCode": "00382199", "corpName": "신한지주", "reportNm": "주식소각결정", "rceptNo": "20260723800297" }
+    },
+    {
+      "id": "Q3",
+      "category": "KEYWORD_FRIENDLY",
+      "query": "원익이 소각하기로 한 주식 수와 소각예정금액은?",
+      "lexicalMismatch": false,
+      "mismatchNote": null,
+      "groundTruth": { "corpCode": "00210980", "corpName": "원익", "reportNm": "주식소각결정", "rceptNo": "20260723900385" }
+    },
+    {
+      "id": "Q4",
+      "category": "KEYWORD_FRIENDLY",
+      "query": "유한코스메틱이 유한양행을 대상으로 발행한 상환전환우선주는 몇 주이고 총 인수대금은 얼마인가?",
+      "lexicalMismatch": false,
+      "mismatchNote": null,
+      "groundTruth": { "corpCode": "00402989", "corpName": "유한코스메틱", "reportNm": "주요사항보고서(유상증자결정)", "rceptNo": "20260722000147" }
+    },
+    {
+      "id": "Q5",
+      "category": "KEYWORD_FRIENDLY",
+      "query": "여주제이비물류센터가 에이엠플러스자산개발에 빌려준 금액과 이자율은?",
+      "lexicalMismatch": true,
+      "mismatchNote": "대여 -> 빌려줌",
+      "groundTruth": { "corpCode": "01472347", "corpName": "여주제이비물류센터", "reportNm": "특수관계인에대한자금대여", "rceptNo": "20260721000838" }
+    },
+    {
+      "id": "Q6",
+      "category": "KEYWORD_FRIENDLY",
+      "query": "인아츠프로덕션이 (주)승산으로부터 빌린 금액과 이자율은?",
+      "lexicalMismatch": true,
+      "mismatchNote": "차입 -> 빌림",
+      "groundTruth": { "corpCode": "01388862", "corpName": "인아츠프로덕션", "reportNm": "특수관계인으로부터자금차입", "rceptNo": "20260722000027" }
+    },
+    {
+      "id": "Q7",
+      "category": "KEYWORD_FRIENDLY",
+      "query": "현대모비스의 1주당 배당금은 얼마인가?",
+      "lexicalMismatch": false,
+      "mismatchNote": null,
+      "groundTruth": { "corpCode": "00164788", "corpName": "현대모비스", "reportNm": "현금ㆍ현물배당결정", "rceptNo": "20260724800076" }
+    },
+    {
+      "id": "Q8",
+      "category": "KEYWORD_FRIENDLY",
+      "query": "두산의 1주당 배당금과 배당금총액은 얼마인가?",
+      "lexicalMismatch": false,
+      "mismatchNote": null,
+      "groundTruth": { "corpCode": "00117212", "corpName": "두산", "reportNm": "현금ㆍ현물배당결정", "rceptNo": "20260723800798" }
+    },
+    {
+      "id": "Q9",
+      "category": "EVENT",
+      "query": "코아스가 정정공시한 전환사채의 전환가액과 정정 후 만기일은?",
+      "lexicalMismatch": true,
+      "mismatchNote": "전환사채권 -> 전환사채 (2026-07-23 실제 검증에서 발견된 패턴과 동일)",
+      "groundTruth": { "corpCode": "00210856", "corpName": "코아스", "reportNm": "[기재정정]주요사항보고서(전환사채권발행결정)", "rceptNo": "20260722000410" }
+    },
+    {
+      "id": "Q10",
+      "category": "EVENT",
+      "query": "DH오토넥스 임시주주총회에서 새로 선임된 사내이사는 누구인가?",
+      "lexicalMismatch": false,
+      "mismatchNote": "약함 - '선임된'/'신규선임' 어형 차이만",
+      "groundTruth": { "corpCode": "00126089", "corpName": "DH오토넥스", "reportNm": "임시주주총회결과", "rceptNo": "20260724800645" }
+    },
+    {
+      "id": "Q11",
+      "category": "EVENT",
+      "query": "메리츠금융지주 2분기 실적발표회는 언제, 어떤 방식으로 열리는가?",
+      "lexicalMismatch": true,
+      "mismatchNote": "기업설명회(IR) -> 실적발표회",
+      "groundTruth": { "corpCode": "00860332", "corpName": "메리츠금융지주", "reportNm": "기업설명회(IR)개최(안내공시)", "rceptNo": "20260724800760" }
+    },
+    {
+      "id": "Q12",
+      "category": "EVENT",
+      "query": "롯데칠성음료의 실적발표회는 언제, 어떤 방식으로 열리는가?",
+      "lexicalMismatch": true,
+      "mismatchNote": "기업설명회 -> 실적발표회",
+      "groundTruth": { "corpCode": "00120571", "corpName": "롯데칠성음료", "reportNm": "결산실적공시예고(안내공시)", "rceptNo": "20260720800623" }
+    }
+  ]
+}
