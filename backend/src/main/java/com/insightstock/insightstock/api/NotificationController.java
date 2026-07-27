@@ -4,6 +4,7 @@ import com.insightstock.insightstock.api.dto.CompanySummary;
 import com.insightstock.insightstock.api.dto.NotificationItemResponse;
 import com.insightstock.insightstock.api.dto.NotificationListResponse;
 import com.insightstock.insightstock.api.dto.UnreadCountResponse;
+import com.insightstock.insightstock.dart.DartUrls;
 import com.insightstock.insightstock.domain.Company;
 import com.insightstock.insightstock.domain.Disclosure;
 import com.insightstock.insightstock.domain.Notification;
@@ -57,6 +58,8 @@ public class NotificationController {
                         company.getId(), company.getCorpCode(), company.getCorpName(), company.getStockCode(),
                         company.getCorpCls()),
                 disclosure.getReportNm(),
+                disclosure.getRceptNo(),
+                DartUrls.viewerUrl(disclosure.getRceptNo()),
                 notification.getCreatedAt(),
                 notification.isRead());
     }
