@@ -103,6 +103,16 @@ hybrid-search:
     # (dart-findings.md 2-10, progress.md 참고).
     enabled: true
 
+notification:
+  collector:
+    # watchlist에 등록된 회사의 신규 공시를 감지해 notification 행으로 만드는 배치.
+    # 실제 검증(로컬 psql로 알림 생성/재실행 시 중복 방지 확인) 전까지는 다른 collector들과
+    # 같은 패턴으로 기본 비활성화.
+    enabled: false
+    # 수집/청킹/색인과 같은 10분 간격 - 감지 쿼리 자체는 가볍지만(EXPLAIN ANALYZE 2.4ms,
+    # progress.md 참고) 굳이 더 잦게 돌 이유가 없어 기존 관례를 그대로 따름.
+    fixed-delay-ms: 600000
+
 cors:
   # Next.js 개발 서버 기본 포트. 배포 시 실제 프론트 도메인으로 교체(콤마로 여러 개 가능).
   allowed-origins: http://localhost:3000
