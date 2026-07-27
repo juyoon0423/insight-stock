@@ -31,6 +31,7 @@ public class EmbeddingService {
     private final TransactionTemplate transactionTemplate;
     private final String model;
     private final int requestBatchSize;
+    private final long minIntervalMs;
 
     public EmbeddingService(
             ChunkRepository chunkRepository,
@@ -38,13 +39,15 @@ public class EmbeddingService {
             TokenCounter tokenCounter,
             PlatformTransactionManager transactionManager,
             @Value("${embedding.model}") String model,
-            @Value("${embedding.request-batch-size}") int requestBatchSize) {
+            @Value("${embedding.request-batch-size}") int requestBatchSize,
+            @Value("${embedding.rate-limit.min-interval-ms}") long minIntervalMs) {
         this.chunkRepository = chunkRepository;
         this.embeddingClient = embeddingClient;
         this.tokenCounter = tokenCounter;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.model = model;
         this.requestBatchSize = requestBatchSize;
+        this.minIntervalMs = minIntervalMs;
     }
 
     public void embedPending(int limit) {
@@ -74,6 +77,14 @@ public class EmbeddingService {
             log.info(
                     "진행 상황: sub-batch {}/{}, 누적 처리 {}건, 누적 토큰 {}개, 누적 예상 비용 ${}",
                     i + 1, subBatches.size(), totalEmbedded, totalTokens, "%.6f".formatted(cumulativeCost));
+
+            // OpenAI TPM(분당 토큰) 한도를 사전에 안 넘도록 sub-batch 사이 최소 간격을 둔다 -
+            // 실측(평균 663토큰/청크 × 100청크 sub-batch ≈ 66,340토큰, 관찰된 한도
+            // 1,000,000TPM 대비 80% 마진)으로 계산한 값. 마지막 sub-batch 뒤에는 대기할
+            // 이유가 없으므로 건너뛴다.
+            if (i < subBatches.size() - 1) {
+                sleep(minIntervalMs);
+            }
         }
 
         if (failedChunks > 0) {
@@ -148,6 +159,14 @@ public class EmbeddingService {
             }
             chunkRepository.saveAll(chunks);
         });
+    }
+
+    private void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static <T> List<List<T>> partition(List<T> list, int size) {
