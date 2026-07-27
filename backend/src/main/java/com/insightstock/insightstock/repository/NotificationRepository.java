@@ -9,11 +9,22 @@ import org.springframework.data.repository.query.Param;
 
 public interface NotificationRepository extends JpaRepository<Notification, Long> {
 
-    // disclosure를 함께 쓰므로(목록에 report_nm 등을 보여줘야 함) fetch join으로 N+1을 피한다.
-    @Query("SELECT n FROM Notification n JOIN FETCH n.disclosure WHERE n.user.id = :userId ORDER BY n.createdAt DESC")
-    List<Notification> findByUserIdWithDisclosure(@Param("userId") Long userId);
+    // 목록 화면에 회사명/보고서명을 같이 보여줘야 하므로 disclosure/company를 한 번에
+    // fetch join한다(watchlist.company를 fetch join하는 WatchlistRepository와 동일한 이유 -
+    // N+1 방지).
+    @Query("SELECT n FROM Notification n JOIN FETCH n.disclosure d JOIN FETCH d.company "
+            + "WHERE n.user.id = :userId ORDER BY n.createdAt DESC")
+    List<Notification> findByUserIdWithDisclosureAndCompany(@Param("userId") Long userId);
 
     long countByUserIdAndReadFalse(Long userId);
+
+    // 소유권을 쿼리 조건(user_id)에 녹였다 - WatchlistRepository.deleteByIdAndUserId()와
+    // 동일 패턴. 본인 것이 아니면 0행이 되어 "찾지 못함"과 구분 없이 404로 처리된다.
+    // WHERE 절이 is_read 상태를 따지지 않으므로 이미 읽음이어도 다시 호출하면 그대로
+    // true로 갱신되고 1행이 반환된다 - 읽음 처리는 몇 번을 반복해도 안전(idempotent)하다.
+    @Modifying
+    @Query("UPDATE Notification n SET n.read = true WHERE n.id = :id AND n.user.id = :userId")
+    int markAsRead(@Param("id") Long id, @Param("userId") Long userId);
 
     // watchlist ⋈ disclosures를 company_id로 조인해 "관심 등록 이후 신규 공시"를 찾아 그대로
     // INSERT한다. Java 루프로 건별 저장하는 대신 단일 INSERT ... SELECT로 처리 - chunks의

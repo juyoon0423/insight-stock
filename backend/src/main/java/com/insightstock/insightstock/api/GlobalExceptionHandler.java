@@ -4,6 +4,7 @@ import com.insightstock.insightstock.auth.DuplicateEmailException;
 import com.insightstock.insightstock.auth.InvalidCredentialsException;
 import com.insightstock.insightstock.auth.InvalidRefreshTokenException;
 import com.insightstock.insightstock.embedding.EmbeddingApiException;
+import com.insightstock.insightstock.notification.NotificationNotFoundException;
 import com.insightstock.insightstock.rag.RagApiException;
 import com.insightstock.insightstock.watchlist.CompanyNotFoundException;
 import com.insightstock.insightstock.watchlist.DuplicateWatchlistException;
@@ -100,6 +101,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(WatchlistNotFoundException.class)
     public ProblemDetail handleWatchlistNotFound(WatchlistNotFoundException ex, HttpServletRequest request) {
         return problemDetail(HttpStatus.NOT_FOUND, "WATCHLIST_NOT_FOUND", "존재하지 않는 관심 목록 항목입니다.", request);
+    }
+
+    @ExceptionHandler(NotificationNotFoundException.class)
+    public ProblemDetail handleNotificationNotFound(NotificationNotFoundException ex, HttpServletRequest request) {
+        return problemDetail(HttpStatus.NOT_FOUND, "NOTIFICATION_NOT_FOUND", "존재하지 않는 알림입니다.", request);
     }
 
     @ExceptionHandler(Exception.class)
