@@ -13,10 +13,12 @@ import type {
   AnswerResponse,
   CompanySearchResponse,
   LoginRequest,
+  NotificationListResponse,
   ProblemDetail,
   SearchResponse,
   SignupRequest,
   TokenResponse,
+  UnreadCountResponse,
   WatchlistItem,
   WatchlistListResponse,
 } from "./types";
@@ -221,5 +223,22 @@ export async function addToWatchlist(companyId: number): Promise<WatchlistItem> 
 
 export async function removeFromWatchlist(id: number): Promise<void> {
   const response = await authFetch(`/api/v1/watchlist/${id}`, { method: "DELETE" });
+  return handleResponse<void>(response);
+}
+
+// ---- 알림 ----
+
+export async function getNotifications(): Promise<NotificationListResponse> {
+  const response = await authFetch("/api/v1/notifications");
+  return handleResponse<NotificationListResponse>(response);
+}
+
+export async function getUnreadNotificationCount(): Promise<UnreadCountResponse> {
+  const response = await authFetch("/api/v1/notifications/unread-count");
+  return handleResponse<UnreadCountResponse>(response);
+}
+
+export async function markNotificationAsRead(id: number): Promise<void> {
+  const response = await authFetch(`/api/v1/notifications/${id}/read`, { method: "PATCH" });
   return handleResponse<void>(response);
 }

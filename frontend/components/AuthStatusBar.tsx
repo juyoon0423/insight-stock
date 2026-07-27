@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { logout } from "@/lib/api";
 import { useSession } from "@/lib/tokenStore";
+import NotificationBell from "@/components/NotificationBell";
 
 // 전 페이지 공통 - 각 페이지 자체 헤더(제목/설명)와는 별개로, 로그인 상태만 보여주는
 // 얇은 상단 바. app/layout.tsx에 한 번만 마운트해 어느 화면에서든 일관되게 보인다.
@@ -20,6 +21,7 @@ export default function AuthStatusBar() {
             >
               관심 목록
             </Link>
+            <NotificationBell />
             <span className="text-zinc-500 dark:text-zinc-400">{session.user.nickname}님</span>
             <button
               type="button"

@@ -95,3 +95,21 @@ export interface WatchlistItem {
 export interface WatchlistListResponse {
   watchlist: WatchlistItem[];
 }
+
+export interface NotificationItem {
+  id: number;
+  company: CompanySummary;
+  reportNm: string;
+  rceptNo: string;
+  dartUrl: string;
+  createdAt: string;
+  isRead: boolean;
+}
+
+export interface NotificationListResponse {
+  notifications: NotificationItem[];
+}
+
+export interface UnreadCountResponse {
+  unreadCount: number;
+}
