@@ -229,12 +229,163 @@ aws ec2 wait instance-terminated --region ap-northeast-2 --instance-ids <INSTANC
 aws ec2 delete-security-group --region ap-northeast-2 --group-id <SG_ID>
 ```
 
+## 9. Nginx 리버스 프록시 (2026-07-28 적용)
+
+8080을 그대로 외부에 공개하지 않기 위해 EC2 내부에 Nginx를 두고 80 → 8080으로
+프록시한다. 백엔드는 여전히 `localhost:8080`에서 그대로 실행되고, 외부에는 80번만 보인다.
+
+**최초 1회 설치 및 설정** (Amazon Linux 2023, `dnf`로 설치):
+
+```bash
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "sudo dnf install -y nginx"
+```
+
+`/etc/nginx/nginx.conf`에 기본으로 들어있는 인라인 `server { listen 80; ... }` 블록은
+제거하고(우리 프록시 설정과 포트 80을 두고 충돌하므로), 대신 `/etc/nginx/conf.d/`에
+별도 파일로 프록시 설정을 넣는다:
+
+```nginx
+# /etc/nginx/conf.d/insightstock-backend.conf
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+```bash
+sudo nginx -t   # 문법 검증
+sudo systemctl enable --now nginx   # 기동 + 재부팅 시 자동 시작 등록
+```
+
+**보안 그룹 정리**: 8080 전체 허용 규칙을 제거한다(더 이상 직접 노출할 필요 없음, 80만 유지).
+
+```bash
+aws ec2 revoke-security-group-ingress --region ap-northeast-2 \
+  --group-id "$SG_ID" --protocol tcp --port 8080 --cidr 0.0.0.0/0
+```
+
+인스턴스를 다시 켤 때마다 반복할 필요는 없다 — Nginx는 `systemctl enable`로 등록되어
+있어 EC2 재부팅 시 자동으로 뜬다. 다만 **백엔드 jar 프로세스 자체는 여전히 자동 기동되지
+않으므로**(8절의 `nohup java -jar` 명령을 EC2 재부팅/재기동마다 다시 실행해야 함) 이 부분은
+그대로 남아있는 제약이다.
+
+검증:
+
+```bash
+curl http://<PUBLIC_IP>/actuator/health        # 80번, 정상 응답 기대
+curl -m 8 http://<PUBLIC_IP>:8080/actuator/health   # 8080번, 타임아웃/거부 기대
+```
+
+## 10. 프론트엔드(Vercel) 배포와 Mixed Content 문제
+
+### 배포 절차
+
+```bash
+cd frontend
+npx vercel link      # 최초 1회, 프로젝트 연결 (브라우저 로그인 필요)
+npx vercel --prod    # 프로덕션 배포
+```
+
+Vercel CLI는 전역 설치 없이 `npx vercel`로 바로 쓸 수 있다. `vercel link`는 대화형
+브라우저 OAuth 로그인이 필요하므로 사람이 한 번은 개입해야 한다.
+
+### 발견한 문제: Mixed Content로 인한 API 호출 전면 차단
+
+당초 계획은 "프론트(Vercel, HTTPS) → 백엔드(EC2 IP, HTTP)"를 `NEXT_PUBLIC_API_BASE_URL`에
+백엔드의 `http://<IP>` 주소를 그대로 넣어 직접 호출하는 것이었다. 그런데 실제 배포 후
+브라우저(Chrome)로 검증하니 **회원가입/로그인 등 모든 API 호출이 `TypeError: Failed to
+fetch`로 실패**했다 — curl로는 같은 요청이 정상 응답(201)했는데 브라우저에서만 실패.
+
+원인은 **Mixed Content 차단**이다: HTTPS 페이지(Vercel)에서 HTTP 리소스로의 능동적 요청
+(`fetch`/`XHR`)은 브라우저가 CORS 설정과 무관하게 무조건 차단한다 — 실제로 요청이
+네트워크로 나가기 전에 막혀서 CORS 프리플라이트(OPTIONS)조차 발생하지 않았다. 이건
+Vercel이 HTTPS를 강제하는 이상 피할 수 없는 문제이고, "지금은 HTTP만, TLS는 시연 직전
+도메인 구매 후"라는 원래 계획으로는 실제 방문자 브라우저에서 절대 동작하지 않는다.
+
+### 해결: Next.js rewrite를 이용한 서버사이드 프록시
+
+브라우저가 아니라 **Vercel 서버 자신이 백엔드를 호출**하도록 바꿨다 — 브라우저 입장에서는
+항상 같은 origin(HTTPS)만 보고, "브라우저 → HTTP 백엔드" 구간 자체가 사라진다.
+
+`frontend/next.config.ts`:
+
+```ts
+const BACKEND_ORIGIN = process.env.BACKEND_ORIGIN ?? "http://<현재 EC2 IP>";
+
+const nextConfig: NextConfig = {
+  async rewrites() {
+    return [
+      { source: "/api/v1/:path*", destination: `${BACKEND_ORIGIN}/api/v1/:path*` },
+    ];
+  },
+};
+```
+
+Vercel 환경변수:
+
+- `NEXT_PUBLIC_API_BASE_URL` = Vercel 프로덕션 URL 자신
+  (예: `https://frontend-steel-omega-0zye89ut4w.vercel.app`) — `frontend/lib/api.ts`가
+  `${API_BASE_URL}/api/v1/...` 형태로 호출하므로, 이 값을 프론트 자신의 주소로 두면
+  결과적으로 같은 origin(`/api/v1/...`)으로 요청이 나가고 위 rewrite가 이걸 가로채
+  EC2로 프록시한다.
+- `BACKEND_ORIGIN` (일반 환경변수, `NEXT_PUBLIC_` 아님 — 클라이언트 번들에 노출되지
+  않고 Vercel 서버에서만 쓰임) = 현재 EC2 IP. **EC2 IP가 바뀔 때마다 이 값을 갱신하고
+  재배포해야 한다** (11절 참고).
+
+```bash
+npx vercel env rm NEXT_PUBLIC_API_BASE_URL production --yes
+echo "https://<Vercel 프로덕션 URL>" | npx vercel env add NEXT_PUBLIC_API_BASE_URL production
+echo "http://<EC2 IP>" | npx vercel env add BACKEND_ORIGIN production
+npx vercel --prod
+```
+
+**타임아웃 관련 확인**: rewrite의 destination이 외부 URL이면 Vercel Serverless Function을
+경유하게 되어 실행 시간 제한(Hobby 플랜 기본 10초)이 걸린다. 실측 결과 `/answers`(하이브리드
+검색 + LLM 호출)는 웜업 상태 0.4~0.8초, 콜드스타트(백엔드 재시작 직후 첫 호출)도 4.1초로
+10초에 충분히 여유가 있어 문제없음을 확인했다(2026-07-28 실측).
+
+**시연 직전 도메인+TLS를 붙이면**: 이 rewrite 우회는 더 이상 필요 없다. `next.config.ts`의
+`rewrites()`를 제거하고 `NEXT_PUBLIC_API_BASE_URL`을 다시 백엔드의 `https://<도메인>`으로
+직접 가리키게 바꾸면 된다(그때는 진짜 HTTPS끼리 통신이라 Mixed Content 문제 자체가 없음).
+
+## 11. CORS 설정
+
+`cors.allowed-origins`는 `application.yml`에서 `${CORS_ALLOWED_ORIGINS:http://localhost:3000}`
+로 외부화되어 있다 — `.env`(로컬은 미설정 시 localhost:3000 기본값, 배포 EC2는
+`.env`에 `CORS_ALLOWED_ORIGINS=https://<Vercel 프로덕션 URL>` 추가) 로 값을 넣는다.
+
+10절의 Vercel rewrite 프록시를 쓰는 한, 브라우저는 항상 같은 origin으로만 호출하므로
+CORS 프리플라이트 자체가 발생하지 않아 이 값이 실제로 검증 경로에 관여하지는 않는다.
+다만 향후 프론트가 백엔드를 직접(도메인+TLS로) 호출하는 방식으로 되돌아갈 경우를 대비해
+값은 계속 맞춰둔다.
+
+## 12. IP가 바뀔 때마다 갱신해야 하는 값 (요약)
+
+인스턴스를 껐다 켤 때마다 퍼블릭 IP가 바뀐다(Elastic IP 미사용). 그때마다:
+
+1. `frontend/next.config.ts`의 `BACKEND_ORIGIN` 기본값 또는 Vercel의 `BACKEND_ORIGIN`
+   환경변수를 새 IP로 갱신 → `npx vercel --prod`로 재배포
+2. EC2 쪽 `.env`의 `CORS_ALLOWED_ORIGINS`는 프론트엔드 주소가 바뀌지 않는 한 그대로 둬도 됨
+   (Vercel 프로덕션 URL은 고정 alias라 IP가 바뀌어도 안 변함)
+3. 로컬 개발용 `frontend/.env.local`의 `NEXT_PUBLIC_API_BASE_URL`은 이 배포 절차와 무관
+   (로컬 개발은 `http://localhost:8080`을 그대로 씀)
+
 ## 알려진 제약 / 다음 단계 후보
 
-- 퍼블릭 IP가 껐다 켤 때마다 바뀐다 — 시연 때 프론트엔드 설정(API base URL)을 매번 갱신해야
-  하거나, Elastic IP를 별도로 붙여야 한다.
+- 퍼블릭 IP가 껐다 켤 때마다 바뀐다 — Vercel의 `BACKEND_ORIGIN` 환경변수를 매번 갱신하고
+  재배포해야 한다(12절). Elastic IP를 붙이면 이 갱신 자체가 없어진다 — 비용 대비 효과를
+  판단해 다음 단계에서 고려.
 - 백엔드가 jar 직접 실행 방식이라 EC2 재부팅 시 자동 기동되지 않는다 — systemd 서비스 등록
   또는 Docker 이미지화가 다음 단계 후보.
-- 8080 포트가 전체 공개되어 있다 — Nginx 리버스 프록시(80/443)로 감추고 8080 자체는 보안
-  그룹에서 제거하는 게 다음 단계.
+- Vercel rewrite 프록시는 임시 우회다 — 시연 직전 도메인 구매 + Let's Encrypt로 백엔드에
+  진짜 TLS를 붙이면 제거하고 직접 호출로 되돌린다(10절 참고).
 - 무중단 배포(재배포 시 다운타임 없이 교체)는 이번 범위 밖 — 별도로 설계할 것.
