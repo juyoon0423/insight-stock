@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# SSH 키 (예: AWS EC2 접속용 .pem)
+*.pem
+
 # Python
 __pycache__/
 *.pyc
