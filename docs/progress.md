@@ -1,6 +1,6 @@
 # 진행 상황 (Progress)
 
-마지막 업데이트: 2026-07-27
+마지막 업데이트: 2026-07-28
 
 **상세 히스토리는 [docs/progress-log.md](./progress-log.md) 참고** — 각 단계를
 왜/어떻게 했는지, 실측 검증 결과, 트러블슈팅 전부 그 문서에 있다. 이 문서는
@@ -15,17 +15,29 @@
   하이브리드 검색(BM25+벡터+RRF) → RAG 답변 생성 → Controller/API(백엔드
   MVP), 프론트엔드 1~2단계 화면(질문답변 / RRF 시각화), 3단계 인증(JWT)+
   WatchList(백엔드+프론트엔드), corpCode.xml 전체 회사 목록 확대, 검색 품질
-  정식 측정(정형+서술형 두 벤치마크, 결론까지 완료), **4단계 알림 — 백엔드+
-  프론트엔드 전체 완성**(스키마 / 감지 서비스+스케줄러 / 조회·읽음 API /
-  헤더 배지+드롭다운 목록, Playwright 실제 브라우저 검증까지 완료).
+  정식 측정(정형+서술형 두 벤치마크, 결론까지 완료), 4단계 알림 — 백엔드+
+  프론트엔드 전체 완성(스키마 / 감지 서비스+스케줄러 / 조회·읽음 API /
+  헤더 배지+드롭다운 목록, Playwright 실제 브라우저 검증까지 완료),
+  **AWS 배포(EC2 + Nginx) + Vercel 프론트엔드 배포 — 실물 브라우저 검증까지
+  완료**(EC2 t3.small에 docker-compose+jar 직접 실행, Nginx로 80→8080
+  리버스 프록시, Vercel에 프론트 배포, HTTPS 프론트→HTTP 백엔드 간 Mixed
+  Content 차단을 발견해 Next.js rewrite 프록시로 해결, 회원가입→로그인→
+  질문답변→관심회사 등록→알림 배지까지 실제 브라우저로 끝까지 확인).
+- **인스턴스 운영 방침**: 평소엔 EC2 인스턴스를 꺼둔다(비용 관리 — 유료 API
+  최소화 원칙과 같은 맥락). 11월 시연 때만 t3.medium으로 리사이즈해 크게
+  켤 예정(현재 t3.small은 로컬 실측 기준 여유가 많지 않음 - 근거는
+  progress-log.md 8절). **검증/작업이 끝나면 인스턴스를 켜둔 채로 세션을
+  끝내지 말고, 항상 사용자에게 "계속 켜둘까/끌까" 먼저 확인할 것** - 이미
+  두 세션 연속으로 지켜온 규칙이라 다음 세션에서도 잊지 않아야 한다.
 
 ## 다음 세션 시작점
 
-**4단계(알림) 전체(백엔드+프론트엔드) 완료.** progress-log.md의 원래 추천
-순서("데이터 규모 확대 → 검색 품질 측정 → 4단계 알림 → AWS 배포")를 보면
-앞 세 개가 전부 끝났으니, **다음 우선순위는 AWS 배포 + 무중단 배포**로
-판단된다 - 기능이 갖춰진 뒤 마지막에 배포로 마무리한다는 원래 계획 그대로.
-다만 이건 이 세션의 판단일 뿐이니 시작 시 사용자와 다시 확인할 것.
+**4단계(알림) 완료에 이어 AWS 배포(EC2+Nginx) + Vercel 프론트엔드 배포까지
+실물 브라우저 검증 완료.** progress-log.md의 원래 추천 순서("데이터 규모
+확대 → 검색 품질 측정 → 4단계 알림 → AWS 배포")가 전부 끝났다. 다음
+우선순위는 **무중단 배포**, 그다음이 **관측성(모니터링/로깅)** — 이 순서는
+2026-07-28 세션에서 사용자가 명시적으로 정한 로드맵이니 다음 세션에서
+임의로 바꾸지 말고 이대로 시작할 것.
 
 - 알림 기능(백엔드+프론트엔드)은 완전히 끝났고 다시 조사할 필요 없음:
   `notification/`(`NotificationDetectionService`+`Scheduler`,
@@ -35,16 +47,28 @@
   (헤더 배지+드롭다운, `AuthStatusBar` 옆에 배치) 전부 실 DB/실 서버/실
   브라우저(Playwright) 검증 완료. `notification.collector.enabled: false`
   (기본 비활성화, 다른 collector와 동일 관례) 유지 중.
-- **AWS 배포**를 다음으로 진행한다면: 인프라(RDS/Elasticsearch 서비스 또는
-  자체 호스팅, 백엔드 컨테이너 배포), 프론트(Vercel 또는 별도 정적/서버
-  호스팅), 환경변수/CORS(`cors.allowed-origins`)를 배포 도메인 기준으로
-  교체, `WatchList` 백엔드 설계 논의에서 이미 짚었던 "프론트/백엔드가 다른
-  도메인일 때 쿠키/CORS 함의"(위 progress-log.md 1절 토큰 저장 방식 논의
-  참고)까지 고려 - 설계안부터 먼저 제안하고 사용자 확인 후 진행할 것(이
-  프로젝트의 기존 작업 방식 그대로).
-- 시작 순서: `docker compose up -d`(postgres/elasticsearch healthy 확인)
-  → `cd backend && ./gradlew bootRun` → `cd frontend && npm run dev`.
-  `.env`에 `DART_API_KEY`/`POSTGRES_USER`/`POSTGRES_PASSWORD`/
+- **AWS 배포(1차)도 완전히 끝났고 다시 조사할 필요 없음**: EC2
+  `i-00bdd2e8b984f5d0f`(t3.small, 평소 stopped)에 docker-compose(Postgres+
+  Elasticsearch)+jar 직접 실행, Nginx가 80→8080 리버스 프록시(8080은 보안
+  그룹에서 제거해 외부 비공개), Vercel `https://frontend-steel-omega-
+  0zye89ut4w.vercel.app`에 프론트 배포, Next.js rewrite로 Vercel 서버가
+  백엔드를 대신 호출하는 프록시(Mixed Content 우회) 적용. 상세 절차/근거는
+  [docs/deploy.md](./deploy.md) 전체와 progress-log.md 8~9절 참고. **인스턴스는
+  기본적으로 꺼져 있다** - 다시 켜서 검증하려면 `docs/deploy.md` 7절(재기동)
+  → `BACKEND_ORIGIN`/Vercel 재배포(12절) 순서 그대로 따를 것.
+- **무중단 배포**를 다음으로 진행한다면: 현재는 jar를 직접 죽였다 새로
+  띄우는 방식이라 재배포 시 다운타임이 그대로 발생한다(8~9절에서 반복
+  확인된 사실). Blue-Green이나 롤링 방식 중 무엇을 쓸지, EC2 한 대로
+  구현할 수 있는 범위인지(예: 두 포트에 구버전/신버전을 같이 띄우고
+  Nginx가 트래픽을 전환) 아니면 인스턴스를 늘려야 하는지부터 설계안을
+  먼저 제안하고 사용자 확인 후 진행할 것(이 프로젝트의 기존 작업 방식
+  그대로).
+- **관측성(무중단 배포 다음 순위)**: 아직 설계 자체를 시작 안 함. 로그
+  수집(현재는 EC2 로컬 `app.log` 파일뿐), 헬스체크/알람, APM 등 범위를
+  어디까지 잡을지부터 옵션을 비교해 제안할 것.
+- 시작 순서(로컬 개발): `docker compose up -d`(postgres/elasticsearch
+  healthy 확인) → `cd backend && ./gradlew bootRun` → `cd frontend && npm
+  run dev`. `.env`에 `DART_API_KEY`/`POSTGRES_USER`/`POSTGRES_PASSWORD`/
   `OPENAI_API_KEY`/`JWT_SECRET` 전부 채워져 있어야 백엔드가 뜬다.
 
 ## 다음 세션 논의거리 (우선순위 미정)
@@ -84,8 +108,34 @@
   재논의 트리거만 존재** — 표본 부족 / 분기 기준 불명확 / 질의 시점에 답
   문서 유형을 모르는 근본 난제 때문에 지금은 구현 안 하기로 함. 더 큰
   표본으로 재확인되거나 `/answers` 실사용에서 품질 문제가 관찰되면 재논의.
-- **AWS 배포 + 무중단 배포** — 아직 착수 안 함. 위 "다음 세션 시작점" 참고,
-  이 세션 판단으로는 다음 우선순위.
+- **무중단 배포 + 관측성** — 아직 착수 안 함. 위 "다음 세션 시작점" 참고,
+  이 순서로 진행하기로 사용자와 확정.
+- **백엔드 jar가 EC2 재부팅 시 자동 기동 안 됨** — `nohup java -jar
+  app.jar ...`로 직접 띄우는 방식이라, 인스턴스를 재시작(reboot)하거나
+  중지 후 재기동할 때마다 SSH로 접속해 수동으로 다시 실행해야 한다(실제로
+  두 세션 모두 재기동할 때마다 반복함, progress-log.md 9절). systemd
+  서비스로 등록하거나 Docker 이미지화하면 해결됨 - 우선순위는 무중단
+  배포/관측성 이후.
+- **Elastic IP 미사용 — 켤 때마다 IP가 바뀌어 Vercel도 매번 재배포해야
+  함** — 인스턴스를 stop→start할 때마다 퍼블릭 IP가 새로 할당돼(현재
+  `43.201.85.100` → `3.36.124.56`으로 이미 한 번 바뀜), Vercel의
+  `BACKEND_ORIGIN` 환경변수를 갱신하고 `vercel --prod`로 재배포해야만
+  프론트-백엔드 연동이 유지된다(docs/deploy.md 12절). Elastic IP를 붙이면
+  이 갱신 자체가 사라지지만 월 비용이 붙는다(인스턴스가 실행 중이 아닐 때
+  Elastic IP는 과금됨) - 평소 꺼두는 운영 방침과 상충하는 면이 있어
+  비용 대비 효과를 판단해야 함, 아직 결론 안 남.
+- **도메인/TLS 미적용 — 시연 직전 진행 예정** — 현재 백엔드는 HTTP(IP
+  기반)만 서비스한다. 도메인을 구매하고 Let's Encrypt로 TLS를 붙이는
+  작업은 의도적으로 미뤄뒀다(지금 사도 시연 전까지 미리 켜둘 필요는 없고,
+  프론트는 아래 Vercel 프록시로 이미 우회돼 있어 급하지 않음).
+- **Vercel rewrite 프록시는 임시 우회 — TLS 적용 시 제거 예정** — Vercel
+  프론트(HTTPS)가 EC2 백엔드(HTTP)를 직접 호출하면 브라우저 Mixed Content
+  정책에 무조건 차단당한다는 걸 실물 브라우저 검증에서 발견해서(위 "완성된
+  기능" 참고, 상세는 progress-log.md 9절), `frontend/next.config.ts`의
+  `rewrites()`로 Vercel 서버가 대신 백엔드를 호출하도록 우회해뒀다. 위
+  도메인/TLS 항목이 처리되면 이 rewrite를 제거하고
+  `NEXT_PUBLIC_API_BASE_URL`을 백엔드 도메인으로 직접 가리키는 원래
+  방식으로 되돌리면 된다.
 - **`WebConfig` CORS 허용 메서드 수동 관리 구조 — 같은 종류의 버그가 두 번
   재발함** — 3단계 WatchList 때 `DELETE` 누락, 이번 4단계 알림 때 `PATCH`
   누락, 둘 다 새 HTTP 메서드를 쓰는 API를 추가할 때 `setAllowedMethods(...)`

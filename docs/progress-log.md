@@ -2081,3 +2081,225 @@ IntelliJ에서 `InsightStockApplication`을 "Application" Run Configuration으�
 못 찾는다 - Run Configuration의 Environment variables에
 `SPRINGDOTENV_DIRECTORY=..`를 수동으로 추가해야 한다. 새 개발 환경/팀원
 온보딩 시 헷갈릴 수 있어 기록해둔다.
+
+## 8. 2026-07-28 세션 — EC2 최초 배포 (t3.small, docker-compose + jar 직접 실행)
+
+로컬 개발 환경(docker-compose + Spring Boot jar)을 AWS EC2 한 대에 그대로
+옮겨 실제로 붙는지 검증하는 세션이었다. 커밋은 `60351c2`(배포 절차 문서화 +
+user-data 스크립트) → `1a070de`(문서 공백 보완, 프론트엔드 `.env.local`
+갱신 절차 추가) 둘로 나뉘었다.
+
+- **인스턴스 크기(t3.small) 선정 — 이 세션에서 측정한 게 아니라, 배포 이전
+  단계에 로컬에서 실측된 근거를 사용자가 고정 제약으로 전달한 것** —
+  세션 시작 프롬프트에 "예산 제약: 평소엔 인스턴스를 꺼둘 거고, 11월 시연
+  때만 잠깐 크게 켤 예정. 지금은 검증 목적이니 t3.small로 진행"이라고 이미
+  명시돼 있었고, 이 배포 세션 자체에서는 `docker stats` 등 리소스 실측을
+  하지 않았다. 그 판단의 실제 근거는 이보다 앞서 사용자가 로컬 환경에서
+  (Claude Code가 아니라 별도 멘토링 대화로) `docker stats`/`ps aux`로 직접
+  측정한 수치다: Elasticsearch 1.056GiB + PostgreSQL 84.32MiB + Spring Boot
+  RSS 약 415MiB, 합계 약 1.5GiB. 이 숫자로 t3.micro(메모리 1GB)는 부족,
+  t3.small(2GB)도 여유가 많지 않다는 결론을 미리 내렸고, 시연 때는
+  t3.medium으로 리사이즈할 계획도 이때 함께 세워졌다 - 이번 배포 세션은 그
+  결론을 그대로 전달받아 실행에 옮겼을 뿐이다(나중에 이 프로젝트 기록을
+  다시 볼 때 "Claude Code가 t3.small을 측정해서 골랐다"고 오해하지 않도록
+  출처를 분명히 남긴다).
+
+- **보안 그룹 + 키페어 세팅** — `insightstock-sg`(`sg-040b14e68eef2ff5d`)를
+  새로 만들어 SSH(22)는 본인 퍼블릭 IP(`/32`)만 허용(`0.0.0.0/0` 금지),
+  HTTP(80)/HTTPS(443)는 전체 허용, 8080(백엔드 API)도 이 시점엔 검증
+  편의를 위해 전체 허용해뒀다(문서에 "임시로만, 나중에 Nginx 뒤로 감출
+  예정"이라고 명시 - 실제로 다음 세션인 9절에서 그대로 제거됨). DB(5432)/
+  ES(9200)는 처음부터 보안 그룹에 아예 열지 않았다 - EC2 내부 docker
+  네트워크에서만 접근하면 충분하기 때문. 키페어는 이미 생성돼 있던
+  `insightstock-key`를 그대로 썼다.
+
+- **EC2 인스턴스 생성 + user-data 자동화** — Amazon Linux 2023 최신 AMI를
+  `describe-images`로 조회해 `run-instances`(t3.small, 태그
+  `Name=insightstock-backend`)로 생성, 인스턴스 ID `i-00bdd2e8b984f5d0f`,
+  최초 퍼블릭 IP `43.201.85.100`. `deploy/user-data.sh`를 최초 버전부터
+  작성해 최초 부팅 시 Docker + Docker Compose v2 플러그인(AL2023 dnf
+  저장소에 없어 GitHub 릴리스 바이너리로 설치)을 자동 설치하게 했다 -
+  "매번 수동 설치하지 않아도 재현 가능하게"가 목표였다.
+
+- **docker-compose 스택 이전** — 로컬의 `docker-compose.yml`과 `docker/`
+  폴더(ES Dockerfile, postgres init 스크립트)를 scp로 그대로 옮기고
+  `docker compose up -d --build`로 기동, `docker inspect
+  --format='{{.State.Health.Status}}'`로 postgres/elasticsearch 둘 다
+  healthy 확인. `.env`는 별도로 scp 전송(`chmod 600`)했고 내용은 사용자에게
+  보여주지 않고 "전송 완료"로만 보고했다(로그/커밋에 절대 남기지 않는다는
+  안전 수칙 그대로).
+
+- **Java 17 누락 발견 — jar 실행 직전에 선제적으로 확인** (커밋 `60351c2`에
+  포함) — 로컬에서 `./gradlew build -x test`로 만든 jar를 scp로 전송한
+  직후, "EC2에 Java 17이 없을 가능성이 높으니 확인 후 설치하겠다"고 먼저
+  판단해 실행 전에 `ssh ... "java -version"`을 실행했다. 결과는 `bash:
+  line 1: java: command not found` - user-data.sh가 Docker만 설치하도록
+  짜여 있었고(jar를 컨테이너 안이 아니라 호스트에서 직접 돌리는 방식이라
+  Java가 따로 필요하다는 걸 처음 설계할 때 놓쳤던 것) 예상이 맞아떨어졌다.
+  `sudo dnf install -y java-17-amazon-corretto-headless`로 즉시 설치해
+  `openjdk version "17.0.19"` 확인 후, **같은 문제가 다음에 인스턴스를 새로
+  만들 때도 재현되지 않도록** `deploy/user-data.sh`의 `dnf install -y
+  docker` 줄에 `java-17-amazon-corretto-headless`를 추가해 최초 설치
+  단계부터 Java가 같이 깔리게 고쳤다 - 이 수정이 이미 반영된 채로
+  커밋됐다.
+
+- **엔드투엔드 검증** — `nohup java -jar app.jar > app.log 2>&1 < /dev/null
+  & disown`으로 SSH 세션 종료 후에도 유지되게 백엔드를 띄웠고, 로그에서
+  Flyway 마이그레이션 6건 적용 + Tomcat 8080 포트 기동 + DB 연결 성공을
+  확인했다. 이어서 3단계로 실물 검증했다: ①외부에서
+  `curl http://43.201.85.100:8080/actuator/health` → `{"status":"UP"}`,
+  ②EC2 내부에서 `pg_isready`(accepting connections)와 Elasticsearch
+  `_cluster/health` → `green` 개별 확인, ③실제 API 호출로 회원가입(`POST
+  /api/v1/auth/signup` → 201)과 로그인(`POST /api/v1/auth/login` → 200,
+  JWT accessToken/refreshToken 정상 발급)까지 - DB 쓰기/읽기와 인증 로직
+  전부가 실제 배포 환경에서 끝까지 동작함을 확인했다.
+
+- **문서화 + 인스턴스 정지** — `docs/deploy.md`를 이때 처음 작성했다(pem
+  경로는 실제 절대경로 대신 플레이스홀더로 표기 - 개인 데스크톱 경로가
+  문서에 그대로 박히지 않게). 검증이 끝나자 "인스턴스를 계속 켜둘까,
+  끌까"를 먼저 사용자에게 물었고(비용 관리 원칙 - 유료 API 최소화와 같은
+  맥락으로 인스턴스도 마찬가지라는 지시가 있었음), 사용자가 정지를
+  선택해 `stop-instances` 실행 후 `running → stopping → stopped` 전이와
+  퍼블릭 IP가 `None`으로 반환되는 것까지 폴링으로 확인했다(Elastic IP
+  미사용이라 다음 Start 때 새 IP가 할당된다는 것도 이때 실측으로 재확인).
+
+- **뒤늦게 발견한 문서 공백 — 프론트엔드 `.env.local` 갱신 절차 누락**
+  (커밋 `1a070de`) — 인스턴스를 정지한 뒤 "다시 켤 때" 절차를 다시 훑어보다,
+  인프라(docker compose)/백엔드(jar) 재기동 절차만 있고 프론트엔드 쪽
+  갱신은 문서에 전혀 없다는 걸 스스로 발견했다. `frontend/lib/api.ts`를
+  실제로 열어 확인한 결과 `NEXT_PUBLIC_API_BASE_URL` 환경변수(`.env.local`)
+  로 백엔드 주소를 읽는 구조였고, 이 값이 없으면 에러를 던지도록 짜여 있어
+  EC2 IP가 바뀔 때마다 `.env.local`도 같이 갱신해야 한다는 걸 확인했다.
+  `NEXT_PUBLIC_*`은 Next.js가 빌드 타임에 정적으로 주입하므로 `npm run
+  dev`(로컬 개발 서버)라면 재시작만으로 충분하지만, 빌드된 결과물을 쓰는
+  경우엔 재빌드가 필요하다는 점, 그리고 백엔드 `cors.allowed-origins`는
+  프론트엔드 origin에 대한 설정이라 백엔드 IP가 바뀌는 것과는 무관하다는
+  구분도 함께 문서에 남겼다.
+
+**이 세션에서 남긴 제약**(다음 세션인 9절에서 그대로 이어받아 처리한 것과
+아직 남은 것이 섞여 있다): 퍼블릭 IP가 껐다 켤 때마다 바뀜(Elastic IP
+미사용), 백엔드가 jar 직접 실행이라 재부팅 시 자동 기동 안 됨, 8080 포트가
+전체 공개된 채로 남아있음(다음 세션에서 Nginx로 정리 예정이라고 미리 문서에
+남겨둠).
+
+## 9. 2026-07-28 세션 — Nginx 리버스 프록시 + Vercel 프론트엔드 배포 (Mixed Content 발견/해결)
+
+8절에서 배포한 백엔드를 실제 사용자가 쓸 수 있는 형태로 완성하는 세션이었다.
+"지난 세션에서 EC2 배포까지 끝냈고, 인스턴스는 stopped 상태"라는 전제로
+시작해 인스턴스 재기동 → Nginx 리버스 프록시 → Vercel 프론트엔드 배포 →
+CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b67`(CORS 외부화)
+→ `76eb9f1`(Mixed Content 우회용 프론트 프록시) → `f5db801`(문서화) 세
+개로 나눴다.
+
+- **인스턴스 재기동 + 상태 확인** — `start-instances`로 켜서 새 퍼블릭 IP
+  `3.36.124.56`을 받았다. `docker ps`로 확인하니 Postgres/Elasticsearch
+  컨테이너는 재시작 정책 덕분에 자동으로 healthy 상태까지 복구돼 있었지만,
+  jar로 직접 띄운 백엔드 프로세스는 재부팅 시 살아남지 않는다는 8절의 제약
+  그대로 죽어 있어 `nohup java -jar app.jar ...`로 다시 띄웠다(로컬에서
+  재빌드는 하지 않고 기존 jar 그대로 재사용).
+
+- **Nginx 설치 및 8080 → 80 정리** (SG 변경은 로그 기록, 코드 변경은
+  커밋 없음 - EC2 서버 설정이라 저장소에 안 남는 부분) — Amazon Linux
+  2023이라 `dnf install -y nginx`로 설치했다. 기본 `/etc/nginx/nginx.conf`
+  안에 인라인으로 `listen 80`인 `server {}` 블록이 이미 들어있어 우리가
+  `/etc/nginx/conf.d/insightstock-backend.conf`에 추가하는 프록시
+  설정(`listen 80 default_server`)과 포트 80을 두고 충돌할 상황이라, 원본을
+  백업(`nginx.conf.bak`)해둔 뒤 인라인 블록(37~53행)을 제거하고
+  `proxy_pass http://127.0.0.1:8080`으로 8080을 대신 받는 설정만 남겼다.
+  `nginx -t`로 문법을 검증하고 `systemctl enable --now nginx`로 기동 +
+  재부팅 시 자동 시작을 등록했다(jar 프로세스와 달리 Nginx는 이제부터는
+  재부팅 때마다 다시 띄울 필요가 없다). 로컬(`curl
+  http://localhost/actuator/health` on EC2)과 외부(`curl
+  http://3.36.124.56/...`) 양쪽에서 80번 정상 응답을 확인한 뒤, 보안
+  그룹에서 8080 전체 허용 규칙(`sgr-08677622bb0765459`)을
+  `revoke-security-group-ingress`로 제거했다. 최종 검증: 80번은
+  `{"status":"UP"}`, 8080번은 `curl -m 8`이 타임아웃(exit 28)으로
+  실제 차단을 확인.
+
+- **CORS 허용 origin 외부화** (커밋 `ac27b67`) — `application.yml`의
+  `cors.allowed-origins`가 `http://localhost:3000`으로 하드코딩돼 있어
+  배포 도메인이 생길 때마다 코드/재빌드가 필요한 구조였다. `${CORS_ALLOWED_
+  ORIGINS:http://localhost:3000}`로 바꿔 환경변수로 오버라이드 가능하게
+  하고 `.env.example`에 키 이름만 추가했다 - 실제 값은 뒤에서 Vercel 도메인이
+  정해진 뒤 EC2 `.env`에 넣었다.
+
+- **Vercel 프론트엔드 배포** — `npx vercel`(전역 설치 없이)로 CLI를 바로
+  썼다. `vercel link`가 브라우저 OAuth 디바이스 코드 로그인을 요구해 이
+  부분만 사용자에게 URL을 전달하고 직접 인증을 완료해달라고 요청한 뒤 이어
+  갔다(에이전트가 대신 로그인할 수 없는 부분이라 사람 개입이 필요했음).
+  `vercel env add NEXT_PUBLIC_API_BASE_URL production`으로 처음엔 EC2 IP를
+  그대로(`http://3.36.124.56`) 넣고 `vercel --prod`로 첫 배포, 프로덕션
+  URL은 `https://frontend-steel-omega-0zye89ut4w.vercel.app`로 고정
+  alias됐다(재배포해도 이 URL은 유지됨).
+
+- **Mixed Content 발견 — curl은 되는데 브라우저만 실패하는 현상을 실측으로
+  좁혀나간 과정** — 첫 배포 직후 `claude-in-chrome`으로 실제 Chrome에서
+  회원가입 폼을 제출하니 "서버에 연결할 수 없습니다"라는 프론트 자체
+  에러가 떴다. 처음엔 서버 부하(백엔드 방금 재시작 직후라 DART 수집
+  배치가 동시에 돌고 있었음)를 의심해 다른 이메일로 재시도했지만 똑같이
+  실패했고, 같은 요청을 curl로 그대로 재현하니 `201 Created`로 정상
+  응답해 서버 문제가 아님을 확인했다. `read_network_requests`로 브라우저
+  네트워크 로그를 보니 `POST http://3.36.124.56/api/v1/auth/signup`에
+  대해 매번 `statusCode: 503`이 찍혔는데, **CORS 프리플라이트(OPTIONS)
+  요청 자체가 한 번도 발생하지 않았다** - 이게 결정적 단서였다. 페이지
+  컨텍스트에서 직접 `fetch()`를 실행해보니 `TypeError: Failed to fetch`만
+  던져 원인을 특정할 수 없었지만, "OPTIONS조차 안 나감"은 CORS 프리플라이트
+  체크보다 먼저(요청이 네트워크에 나가기도 전에) 브라우저가 막았다는
+  뜻이었고, 이는 HTTPS 페이지(Vercel)에서 HTTP 리소스로의 능동적 요청
+  (`fetch`/`XHR`)을 CORS 헤더와 무관하게 무조건 차단하는 **Mixed Content
+  정책**과 정확히 일치했다. 원래 계획("지금은 HTTP만, TLS는 시연 직전
+  도메인 구매 후")으로는 실제 방문자 브라우저에서 이 구조가 절대 동작하지
+  않는다는 뜻이라, 임의로 우회 방법을 정하지 않고 발견한 사실 그대로
+  사용자에게 보고하고 해결 방향(Vercel 프록시로 우회 / 지금 도메인+TLS
+  발급 / 이번 세션은 중단)을 먼저 물었다.
+
+- **해결 방향 결정 전 안전성 확인 요청 — RAG 답변 API 콜드스타트가 Vercel
+  서버리스 타임아웃 안에 드는지 실측** — 사용자가 Vercel rewrite 프록시
+  방식을 선택하면서, `destination`이 외부 URL인 rewrite는 Vercel
+  서버리스 함수를 거치게 되어 실행 시간 제한(Hobby 플랜 기본 10초)에 걸릴
+  수 있으니 먼저 확인하라고 요청했다. 방금 재시작한 백엔드에 직접 curl로
+  측정한 결과 웜업 상태 0.4~0.8초, 콜드스타트(재시작 직후 첫 호출) 4.1초로
+  - 위 5절에 이미 기록된 2026-07-23 실측(정상 상태 1,917ms, 첫 호출
+  5,480ms)과도 같은 자릿수 - 10초에 충분히 여유가 있음을 확인한 뒤에야
+  구현을 시작했다.
+
+- **해결 — Next.js rewrite로 Vercel 서버가 대신 백엔드를 호출하게 전환**
+  (커밋 `76eb9f1`) — 브라우저가 아니라 Vercel 서버 자신이 HTTP 백엔드를
+  호출하도록 바꿔, 브라우저 입장에서는 항상 같은 origin(HTTPS)만 보이게
+  했다. `frontend/next.config.ts`에 `rewrites()`로 `/api/v1/:path*` →
+  `${BACKEND_ORIGIN}/api/v1/:path*`를 추가했고, `BACKEND_ORIGIN`은
+  `NEXT_PUBLIC_`이 아닌 일반 환경변수로 둬 클라이언트 번들에 노출되지
+  않고 Vercel 서버에서만 쓰이게 했다(EC2 IP를 브라우저에 노출할 이유가
+  없어서). 기존 `frontend/lib/api.ts` 코드는 전혀 손대지 않았다 - 이
+  파일이 이미 `${API_BASE_URL}/api/v1/...` 형태로 호출하는 구조라,
+  `NEXT_PUBLIC_API_BASE_URL` 값을 EC2 IP 대신 **Vercel 프로덕션 URL
+  자기 자신**으로 바꾸기만 하면 결과적으로 같은 origin(`/api/v1/...`)
+  으로 요청이 나가고 위 rewrite가 그걸 가로채 EC2로 프록시하는 구조가
+  된다 - 코드 변경 없이 환경변수 값 교체 + 설정 파일 추가만으로 우회를
+  완성한 것이다. `vercel env rm`으로 기존 절대경로 값을 지우고 프로덕션
+  URL로 다시 넣은 뒤 재배포, curl로 `https://frontend-.../api/v1/answers`
+  가 실제 EC2 응답을 그대로 돌려주는 것까지 먼저 확인했다.
+
+- **실물 브라우저 전체 플로우 검증(claude-in-chrome)** — 프록시 적용 후
+  회원가입(`POST .../auth/signup` → `201`, 자동 로그인까지 이어짐) →
+  질문답변(`POST .../answers` → `200`, 색인 범위 밖 질문이라 "찾지 못했다"는
+  응답이었지만 이는 RAG 환각 억제가 의도대로 동작한 정상 케이스) →
+  관심회사 검색/등록("삼성전자"는 현재 수집 범위에 없어 빈 결과, "한국투자
+  증권"으로 대체해 검색→등록 `201` 성공) → 알림 벨 드롭다운(`GET
+  .../notifications` → `200`, `notification.collector.enabled: false`
+  기본값이라 빈 목록이 정상) 순서로 전부 성공했다.
+  `read_network_requests`로 프론트 도메인 기준 API 호출 13건을 전수
+  확인해 전부 `https://frontend-.../api/v1/...` 같은 origin으로만 나갔고
+  2xx 상태코드였음을 재확인했다 - Mixed Content/CORS 에러 0건.
+
+- **문서화 + 인스턴스 정지** (커밋 `f5db801`) — `docs/deploy.md`에 9~12절로
+  Nginx 설정 절차, Vercel 배포 + Mixed Content 해결 경위, CORS와 프록시
+  방식의 관계, IP가 바뀔 때마다 갱신해야 하는 값 목록을 추가했다. 검증이
+  끝난 뒤 다시 "계속 켜둘까, 끌까"를 먼저 물었고, 사용자가 정지를 선택해
+  `stop-instances`로 정지했다.
+
+**이로써 EC2 백엔드가 Nginx 뒤로 정리되고, Vercel 프론트엔드가 실제
+브라우저에서 Mixed Content 없이 끝까지 동작하는 상태로 배포됐다.** 남은
+제약(무중단 배포 미착수, jar 자동 기동 안 됨, Elastic IP 미사용, 도메인/TLS
+미적용, Vercel 프록시는 임시 우회)은 [docs/progress.md](./progress.md)의
+"다음 세션 논의거리"에 정리했다.
