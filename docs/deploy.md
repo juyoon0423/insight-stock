@@ -209,6 +209,18 @@ ssh -i "<PEM_PATH>" ec2-user@<새 PUBLIC_IP> \
 > 참고: SSH 보안 그룹 규칙이 "내 IP"로 고정되어 있으므로, 새 위치(카페, 다른 네트워크 등)에서
 > 접속하려면 1단계의 "내 IP가 바뀌면" 절차대로 규칙을 갱신해야 한다.
 
+**퍼블릭 IP가 바뀔 때마다 프론트엔드도 반드시 갱신해야 한다:**
+
+- `frontend/.env.local`의 `NEXT_PUBLIC_API_BASE_URL`을 새 IP로 교체
+  (`frontend/lib/api.ts`가 이 값으로 백엔드를 호출 — 값이 없으면 에러를 던지도록 되어있음)
+- `NEXT_PUBLIC_*`는 Next.js가 빌드 타임에 정적으로 주입하므로, 이미 빌드된 프론트엔드를
+  쓰고 있다면 `.env.local` 수정만으로는 반영되지 않는다 — 다음 중 하나 필요:
+  - 로컬에서 `npm run dev`로 띄우는 경우: `.env.local` 수정 후 재시작하면 반영됨
+  - 빌드된 결과물을 배포한 경우: `.env.local` 수정 후 `npm run build`로 다시 빌드해야 함
+- 백엔드 `application.yml`의 `cors.allowed-origins`는 프론트엔드가 어디서 호출하는지(그
+  origin)에 대한 설정이라 백엔드 IP가 바뀌는 것과는 무관 — 프론트엔드 자체 주소가 바뀔
+  때만 여기를 갱신하면 된다.
+
 ## 8. 완전히 정리할 때 (더 이상 안 쓸 때)
 
 ```bash
