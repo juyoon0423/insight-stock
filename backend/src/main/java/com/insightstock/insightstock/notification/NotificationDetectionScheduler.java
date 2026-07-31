@@ -1,6 +1,7 @@
 package com.insightstock.insightstock.notification;
 
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -21,7 +22,10 @@ public class NotificationDetectionScheduler {
         this.detectionService = detectionService;
     }
 
+    // lockAtMostFor/lockAtLeastFor 근거는 DisclosureCollectorScheduler와 동일
+    // (fixed-delay 10분 대비 넉넉한 15분, 시계 어긋남 방어용 최소 5초).
     @Scheduled(fixedDelayString = "${notification.collector.fixed-delay-ms}")
+    @SchedulerLock(name = "notificationDetection", lockAtMostFor = "PT15M", lockAtLeastFor = "PT5S")
     public void detect() {
         try {
             detectionService.detectNew();

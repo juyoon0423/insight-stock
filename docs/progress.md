@@ -73,6 +73,14 @@
 
 ## 다음 세션 논의거리 (우선순위 미정)
 
+- **청킹/임베딩/corpCode 동기화 스케줄러를 나중에 활성화할 때 `@SchedulerLock`
+  추가를 빠뜨리지 말 것** — 무중단 배포 도입(2026-07-31)으로 공시 수집/원문
+  수집/색인/알림 감지 4개 스케줄러에는 ShedLock을 적용했지만, 현재
+  비활성화(`enabled: false`) 상태인 `ChunkingScheduler`/`EmbeddingScheduler`/
+  `CorpCodeSyncScheduler`는 이번 범위 밖이라 그대로 뒀다. 무중단 배포 중
+  인스턴스가 잠깐 2개 뜨는 구간의 중복 실행 위험은 활성화되는 모든
+  스케줄러에 동일하게 적용되므로, 이 셋 중 하나라도 나중에 `enabled: true`로
+  켜기 전에 `@SchedulerLock`부터 추가해야 한다.
 - **notification 리스트 페이지네이션 미검토** — `GET /notifications`가
   현재 전체를 한 번에 반환한다. 알림이 많아지면(watchlist 회사 수 × 공시
   빈도) 필요할 수 있음, 아직 실측 안 함.
