@@ -2303,3 +2303,128 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
 제약(무중단 배포 미착수, jar 자동 기동 안 됨, Elastic IP 미사용, 도메인/TLS
 미적용, Vercel 프록시는 임시 우회)은 [docs/progress.md](./progress.md)의
 "다음 세션 논의거리"에 정리했다.
+
+## 10. 2026-07-31 세션 — 무중단 배포(ShedLock + Blue-Green) 실물 검증 + t3.medium 리사이즈 실증
+
+4단계 알림 설계 때부터 남아있던 우려("무중단 배포로 인스턴스가 잠깐 2개
+뜨면 스케줄러가 중복 실행될 수 있다")를 실제로 재현하고 ShedLock으로
+해결하는 세션. 자동화 스크립트 없이 4단계(ShedLock 도입 → EC2 blue-green
+준비 → 실제 전환 → 무중단/중복방지 검증)를 손으로 하나씩 진행했다 -
+이해와 검증이 먼저, 자동화는 별도 작업으로 의도적으로 미룸.
+
+- **1단계: ShedLock 도입** — `net.javacrumbs.shedlock:shedlock-spring`
+  + `shedlock-provider-jdbc-template`(7.7.0, Maven Central
+  `maven-metadata.xml`로 최신 버전 직접 확인 후 채택)을 추가하고, Flyway
+  V7로 공식 스키마 그대로 `shedlock` 테이블을 만들었다. 락 저장소는 이미
+  쓰고 있는 Postgres를 재사용 - 새 인프라(Redis 등) 불필요.
+
+  `@SchedulerLock`은 4개 스케줄러(공시 수집/원문 수집/색인/알림 감지)에
+  붙였다 - 사용자가 명시한 범위 그대로이고, 청킹/임베딩/corpCode 동기화
+  스케줄러는 현재 비활성화 상태라 이번 범위에서 제외했다(대신
+  `docs/progress.md` "다음 세션 논의거리"에 "나중에 활성화할 때
+  `@SchedulerLock` 추가를 빠뜨리지 말 것"을 남겨둠 - 사용자가 직접 이
+  대응을 요청했다).
+
+  `lockAtMostFor`/`lockAtLeastFor` 값은 추측하지 않고 실제
+  `application.yml`을 확인해서 정했다 - 4개 스케줄러 전부
+  `fixed-delay-ms: 600000`(10분)로 동일함을 확인한 뒤, `lockAtMostFor`는
+  그보다 넉넉한 `PT15M`(크래시로 락을 못 놓아도 15분 뒤엔 재시도
+  가능하게), `lockAtLeastFor`는 0이 아니라 `PT5S`(blue-green 전환 중
+  두 인스턴스 시계가 살짝 어긋나도 락 해제 직후 즉시 재실행되는 걸
+  막기 위함)로 설정했다.
+
+  로컬 부팅으로 검증: Flyway V7 적용, 앱 정상 기동(2.6초), 3개 활성
+  스케줄러(공시수집/원문수집/색인)가 ShedLock 프록시를 거쳐 실행되고
+  `shedlock` 테이블에 락 행이 정확히 기록됨을 psql로 확인 -
+  `lock_until - locked_at`이 지정한 `lockAtLeastFor=5초`와 정확히
+  일치했다. 발생한 ERROR 2건은 기존에 알려진 무관한 이슈(감사보고서 ZIP
+  파일명 불일치, progress.md에 이미 기록됨)였다. → 커밋 `0e8d9ff`
+
+- **2단계: EC2 blue-green 준비** — 인스턴스(`i-00bdd2e8b984f5d0f`,
+  당시 t3.small)를 시작(새 IP `13.125.231.159`), Nginx를 9절의 고정
+  `proxy_pass http://127.0.0.1:8080;` 방식에서 `upstream backend { server
+  127.0.0.1:8081; }` 구조로 바꿔 포트 전환이 파일 통째 수정 없이 되게
+  했다. 기존 jar를 `SERVER_PORT=8081` 환경변수로 재기동(하드코딩 없이) -
+  외부에서 80번 포트로 정상 응답, 8080 직접 접근은 보안그룹대로 차단됨을
+  확인.
+
+- **3단계: 실제 blue-green 전환 — 도중 t3.small 메모리 부족으로 SSH까지
+  무응답되는 사고 발생, t3.medium으로 해결** — 버전 구분을 위해
+  `InsightStockApplication`에 사소한 로그 마커
+  ("`InsightStock backend started (build marker: blue-green-verification)`")
+  를 추가한 새 jar를 빌드해 8082로 기동을 시도했다. 그런데 8082 JVM이
+  뜨는 순간(12:06:03 KST) EC2가 **SSH 배너 교환 단계에서부터 응답 불가**
+  상태에 빠졌다 - AWS `describe-instance-status`는 시스템/인스턴스 체크
+  모두 `ok`였는데도 SSH·HTTP(nginx 80번 포함) 전부 무응답이었고, 로컬
+  헬스체크 curl 루프가 그 순간부터 계속 `000` 타임아웃을 기록했다.
+  10분 가까이 자연 복구를 기다렸지만 계속 무응답이었다(사용자가 직접
+  "폴링 멈추고 인스턴스 크기를 키우자"로 개입).
+
+  원인 추정: t3.small은 RAM 2GB인데 JVM 2개(각 500MB+ RSS) + Postgres +
+  Elasticsearch(보통 1GB+ 요구)를 동시에 띄우면 요구 메모리가 물리
+  메모리를 넘어서고, t3.small엔 스왑도 없어서(`Swap: 0B`) 메모리 압박이
+  sshd 응답조차 막을 정도로 번진 것으로 보인다 - `free -h`로 정확한
+  수치를 직접 확인하지는 못했다(SSH 자체가 안 됐기 때문 - 이 사실 자체가
+  증거).
+
+  대응: `aws ec2 stop-instances --force`로 AWS 쪽에서(SSH 경유 아님)
+  강제 종료 → 완전히 `stopped` 확인 → `modify-instance-attribute`로
+  `t3.medium`(4GB)으로 변경 → 재기동(새 IP `13.125.116.229`). Nginx
+  upstream 설정은 EBS 볼륨에 남아있어 그대로 유지됐다. t3.medium에서는
+  8081+8082 JVM 2개가 동시에 떠 있어도 `free -h` 기준 `available`
+  1.4~1.9GiB를 유지했고, SSH/HTTP 모두 즉시 응답했다 - 리사이즈가
+  실제로 원인을 해결했음을 확인.
+
+  t3.medium에서 처음부터 다시 진행: 8081 재기동(구버전, 트래픽 담당) →
+  8082 기동(신버전, 버전 마커 포함) → 헬스체크 `{"status":"UP"}` 확인 →
+  Nginx upstream을 8081→8082로 바꾸고 `nginx -s reload`(12:22:00 KST) →
+  전환 성공 확인 → (4단계 검증을 위해 8081은 바로 죽이지 않고 유지) →
+  검증 완료 후 8081 프로세스 종료, 신버전(`app-v2.jar`)을 정식 `app.jar`
+  로 승격해 다음 세션이 헷갈리지 않게 정리.
+
+  **이번 사고 자체가 중요한 실측 증거다**: `docs/progress.md`에 이미
+  있던 "시연(11월) 때는 t3.medium으로 리사이즈해서 크게 켤 예정"이라는
+  결정이 추측이 아니라 실측으로 뒷받침됐다 - blue-green(두 인스턴스
+  동시 실행)을 실제로 쓰려면 t3.small로는 부족하고 t3.medium 이상이
+  필요하다는 게 이번 세션에서 확정됐다. 평소(단일 인스턴스만 실행)
+  운영에는 t3.small로 계속 충분하다.
+
+- **4단계: 무중단 curl 검증 + ShedLock 중복실행 방지 검증, 둘 다 실물
+  로그로 확보** — 두 가지를 실측으로 증명했다:
+
+  **무중단 확인**: 전환 순간(12:22:00 KST) 전후로 로컬에서 0.5초 간격
+  헬스체크 curl 루프를 돌렸다. t3.medium 리사이즈 이후 세션 전체(약
+  3분 20초, 8082 기동 → 전환 순간 → 안정화까지 400회 요청)에서
+  **400/400 전부 200**, 최대 응답 시간 0.86초(타임아웃/502 없음) -
+  `nginx -s reload`가 실제로 무중단이라는 걸 실측으로 확인했다.
+
+  **ShedLock 중복 실행 방지 확인**: 8081/8082가 동시에 떠 있는 구간에서
+  fixed-delay 주기가 최소 1번은 겹치도록 타이밍을 맞췄다 - 트래픽을
+  더 이상 받지 않는(nginx가 이미 8082로 넘어간) 8081만 명령줄 인자로
+  fixed-delay를 20초로 임시 단축해 재시작(`application.yml`은 안
+  건드림, 운영 중인 8082도 안 건드림), 8082의 자연스러운 다음 10분
+  주기(03:31:20 UTC경, 8082가 03:21:18에 시작했으므로)와 겹치게 만들었다.
+  실제 로그로 확보한 타임라인:
+  - `03:31:22.907` 8082가 `documentCollector` 락 획득, 처리 시작
+  - `03:31:26.023` 8081(20초 주기)이 같은 락을 시도 → **"Not executing
+    'documentCollector'. It's locked."**로 명시적으로 거부됨(`indexing`
+    도 동일)
+  - `03:31:27.904` 8082가 락 반납
+
+  ShedLock 없이 두 프로세스가 각자 스케줄러를 돌렸다면 이 구간에서
+  `documentCollector`가 동시에 두 번 실행돼 같은 PENDING 공시를 경합
+  처리했을 것 - 실제로 한쪽만 실행되고 다른 쪽은 명시적으로 스킵됐음을
+  DEBUG 로그(`logging.level.net.javacrumbs.shedlock=DEBUG`, 이번
+  검증을 위해 커맨드라인 인자로만 임시 적용)로 확인했다.
+
+- **문서화** — `docs/deploy.md`에 13~17절로 ShedLock 도입 배경/설정,
+  Nginx upstream 구조 변경, blue-green 수동 절차(정확한 명령어 순서),
+  이번 검증 결과(무중단 curl 로그 요약 + ShedLock 로그 타임라인),
+  t3.small 메모리 부족 사고와 t3.medium 리사이즈 실증 기록을 추가했다.
+  "알려진 제약" 목록에서 "무중단 배포는 이번 범위 밖" 항목을 제거하고
+  "수동 절차는 검증 완료, 자동화는 다음 단계"로 갱신했다.
+
+**이로써 무중단 배포(Blue-Green + ShedLock)가 수동 절차 기준으로 실물
+검증까지 완료됐다.** 자동화(스크립트 하나로 묶기)는 의도적으로 다음
+단계로 미뤘다. 인스턴스 크기(t3.medium 유지 여부)와 정지 여부는
+[docs/progress.md](./progress.md)의 최신 상태를 확인할 것.

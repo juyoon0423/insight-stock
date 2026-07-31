@@ -379,6 +379,150 @@ CORS 프리플라이트 자체가 발생하지 않아 이 값이 실제로 검�
 3. 로컬 개발용 `frontend/.env.local`의 `NEXT_PUBLIC_API_BASE_URL`은 이 배포 절차와 무관
    (로컬 개발은 `http://localhost:8080`을 그대로 씀)
 
+## 13. ShedLock — 무중단 배포 중 스케줄러 중복 실행 방지 (2026-07-31 적용)
+
+4단계 알림 설계 때 "무중단 배포로 인스턴스가 잠깐 2개 뜨면 같은 `@Scheduled` 배치가 양쪽에서
+동시 실행될 수 있다"는 우려가 있었다(그래서 알림 감지 스케줄러를 처음부터 별도 클래스로
+분리해뒀다). `net.javacrumbs.shedlock`(spring 통합, `shedlock-spring` +
+`shedlock-provider-jdbc-template`, 7.7.0)으로 실제 해결했다. 이미 쓰고 있는 Postgres를
+락 저장소로 재사용해 새 인프라(Redis 등)를 추가하지 않았다 — Flyway V7이 공식 스키마
+그대로 `shedlock` 테이블을 만든다.
+
+`@SchedulerLock`은 다음 4개 스케줄러에 붙였다(공시 수집/원문 수집/색인/알림 감지 — 전부
+`fixed-delay-ms: 600000`, 즉 10분 간격으로 동일하다는 걸 `application.yml`에서 실제로
+확인한 뒤 값을 정했다):
+
+- `lockAtMostFor = "PT15M"` — fixed-delay(10분)보다 넉넉하게 15분. 인스턴스가 크래시해
+  락을 못 놓아도 15분 뒤엔 다른 인스턴스가 다시 시도할 수 있게 하는 안전장치.
+- `lockAtLeastFor = "PT5S"` — 0이 아니라 5초. blue-green 전환 중인 두 인스턴스 간 시계가
+  살짝 어긋나도 락 해제 직후 즉시 재실행되는 걸 막기 위함.
+
+청킹/임베딩/corpCode 동기화 스케줄러는 현재 `application.yml`에서 비활성화 상태라 이번
+범위에서 제외했다(나중에 활성화할 때 `@SchedulerLock` 추가를 빠뜨리지 말 것 —
+`docs/progress.md` "다음 세션 논의거리" 참고).
+
+## 14. Nginx를 upstream 블록 구조로 변경
+
+9절의 `proxy_pass http://127.0.0.1:8080;` 고정 방식은 포트를 바꾸려면 파일을 통째로
+고쳐야 했다. blue-green 전환(포트만 바꿔서 트래픽을 옮기는 것)을 위해 `upstream` 블록으로
+바꿨다:
+
+```nginx
+# /etc/nginx/conf.d/insightstock-backend.conf
+upstream backend {
+    server 127.0.0.1:8082;   # 현재 라이브 포트 - blue-green 전환마다 바뀐다
+}
+
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+> **주의**: 이 세션 이후 "라이브 포트"는 더 이상 8080이 아니다. 현재 EC2의
+> `/etc/nginx/conf.d/insightstock-backend.conf`를 먼저 확인해 `upstream backend`가
+> 가리키는 포트를 확인한 뒤 그 포트로 jar를 띄울 것 (4절의 "항상 8080" 가정은 이 절
+> 적용 이후로는 유효하지 않다).
+
+## 15. Blue-Green 수동 절차 (검증된 명령어 순서)
+
+이번 세션엔 자동화 스크립트 없이 손으로 한 단계씩 실행하며 각 단계 결과를 확인했다.
+아래는 실제로 실행해서 검증된 순서(포트는 8081→8082 전환 기준, 다음 번엔 8082→8081이 됨):
+
+```bash
+# 0. 로컬에서 최신 코드로 jar 빌드
+cd backend && ./gradlew build -x test
+
+# 1. 새 jar를 EC2로 전송 (기존 app.jar를 덮어쓰지 않고 별도 이름으로)
+scp -i "<PEM_PATH>" backend/build/libs/insight-stock-0.0.1-SNAPSHOT.jar \
+  ec2-user@<PUBLIC_IP>:~/insight-stock/app-v2.jar
+
+# 2. 새 버전을 새 포트(예: 8082)로 기동 - SERVER_PORT 환경변수로 포트 지정(하드코딩 금지)
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
+  "cd ~/insight-stock && SERVER_PORT=8082 nohup java -jar app-v2.jar > app-8082.log 2>&1 < /dev/null & disown"
+
+# 3. 헬스체크 통과를 반드시 먼저 확인 (여기서 실패하면 4번으로 넘어가지 않는다)
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "curl -s http://localhost:8082/actuator/health"
+# {"status":"UP"} 확인 후에만 다음 단계로
+
+# 4. Nginx upstream을 새 포트로 바꾸고 reload (재시작 아님 - 이게 무중단의 핵심)
+#    conf.d/insightstock-backend.conf의 upstream 블록 안 포트만 8082로 수정한 뒤:
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "sudo nginx -t && sudo nginx -s reload"
+
+# 5. 외부에서 전환이 실제로 반영됐는지, 여전히 무중단인지 확인
+curl -s http://<PUBLIC_IP>/actuator/health
+
+# 6. 기존(8081) 프로세스 종료
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "pkill -f 'SERVER_PORT=8081'"   # 또는 ps로 PID 확인 후 kill
+
+# 7. 정리 - 새 버전을 정식 app.jar로 승격 (다음 세션이 헷갈리지 않도록)
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
+  "cd ~/insight-stock && rm -f app.jar && mv app-v2.jar app.jar"
+```
+
+## 16. 검증 결과 (2026-07-31, 실측)
+
+### 무중단 확인
+
+전환 순간(12:22:00 KST) 전후로 로컬에서 0.5초 간격 헬스체크 curl 루프를 돌렸다.
+t3.medium으로 리사이즈한 이후 세션 전체(약 3분 20초, 400회 요청 - 실제 8082 기동, nginx
+reload 전환 순간, 이후 안정화 구간까지 전부 포함)에서 **400/400 전부 200**, 최대 응답
+시간 0.86초(GC 등에 의한 정상 범위 편차, 타임아웃/502 없음). `nginx -s reload`가 실제로
+무중단이라는 걸 실측으로 확인했다.
+
+### ShedLock 중복 실행 방지 확인
+
+8081/8082가 동시에 떠 있는 구간에서 fixed-delay 주기가 최소 1번은 겹치도록, 트래픽을 더
+이상 받지 않는 8081만 별도로 짧은 주기(`--dart.document-collector.fixed-delay-ms=20000`
+등, 명령줄 인자로만 임시 적용 - `application.yml`은 건드리지 않음)로 재시작해 8082(운영
+설정 그대로, 건드리지 않음)의 자연스러운 다음 주기와 겹치게 만들었다. 실제 로그:
+
+```
+# 8082 (정상 10분 주기) - documentCollector 락 획득
+2026-07-31T03:31:22.907Z DEBUG ... Locked 'documentCollector', lock will be held at most until 2026-07-31T03:46:22.904Z
+2026-07-31T03:31:22.912Z  INFO ... c.i.i.c.DocumentCollectorService : 처리할 PENDING 공시가 없습니다.
+
+# 8081 (20초 주기) - 같은 락을 시도했다가 명시적으로 거부됨
+2026-07-31T03:31:26.023Z DEBUG ... Not executing 'documentCollector'. It's locked.
+2026-07-31T03:31:26.028Z DEBUG ... Not executing 'indexing'. It's locked.
+
+# 8082가 5초 뒤 정상적으로 락 반납
+2026-07-31T03:31:27.904Z DEBUG ... Task finished, lock 'documentCollector' will be released at 2026-07-31T03:31:27.904Z
+```
+
+ShedLock 없이 두 프로세스가 각자 스케줄러를 돌렸다면 이 구간에서 `documentCollector`가
+동시에 두 번 실행돼 같은 PENDING 공시를 경합 처리했을 것 - 실제로 한쪽만 실행되고
+다른 쪽은 명시적으로 스킵됐음을 로그로 확인했다.
+
+## 17. 예상치 못한 발견 — t3.small에서 blue-green 시도 시 메모리 부족으로 SSH까지 무응답
+
+3단계(8082 기동) 도중 EC2가 **SSH 배너 교환 단계에서부터 타임아웃**되는 상황이 발생했다
+(AWS `describe-instance-status`는 시스템/인스턴스 체크 모두 `ok`였는데도 SSH·HTTP(nginx
+80번 포트 포함) 전부 무응답 - 로컬 헬스체크 curl 루프가 12:06:03 KST부터 계속 `000`
+타임아웃을 기록했다). t3.small은 RAM 2GB인데, JVM 2개(각 500MB+ RSS) + Postgres +
+Elasticsearch(보통 1GB+ 요구)를 동시에 띄우면 요구 메모리가 물리 메모리를 넘어서고,
+t3.small엔 스왑도 없어서(`Swap: 0B`) 극심한 메모리 압박이 sshd 응답조차 막을 정도로
+번진 것으로 보인다 — `free -h`로 정확한 수치를 직접 확인하지는 못했다(SSH 자체가
+안 됐기 때문 - 이 사실 자체가 증거).
+
+**대응**: `aws ec2 stop-instances --force`로 AWS 쪽에서 강제 종료 → `modify-instance-attribute`
+로 `t3.medium`(4GB)으로 변경 → 재기동. t3.medium에서는 8081+8082 동시 실행 중에도
+`free -h` 기준 `available` 1.4~1.9Gi를 유지했고, SSH/HTTP 모두 즉시 응답했다.
+
+**결론**: `docs/progress.md`에 있던 "시연(11월) 때는 t3.medium으로 리사이즈해서 크게 켤
+예정"이라는 기존 결정이 추측이 아니라 실측으로 뒷받침됐다 - **blue-green(두 인스턴스
+동시 실행)을 실제로 쓰려면 t3.small로는 부족하고 t3.medium 이상이 필요하다**는 게 이번
+세션에서 확정된 사실이다. 평소(단일 인스턴스만 실행) 운영에는 t3.small로 계속 충분하다.
+
 ## 알려진 제약 / 다음 단계 후보
 
 - 퍼블릭 IP가 껐다 켤 때마다 바뀐다 — Vercel의 `BACKEND_ORIGIN` 환경변수를 매번 갱신하고
@@ -388,4 +532,9 @@ CORS 프리플라이트 자체가 발생하지 않아 이 값이 실제로 검�
   또는 Docker 이미지화가 다음 단계 후보.
 - Vercel rewrite 프록시는 임시 우회다 — 시연 직전 도메인 구매 + Let's Encrypt로 백엔드에
   진짜 TLS를 붙이면 제거하고 직접 호출로 되돌린다(10절 참고).
-- 무중단 배포(재배포 시 다운타임 없이 교체)는 이번 범위 밖 — 별도로 설계할 것.
+- **무중단 배포(Blue-Green) — 수동 절차는 검증 완료(13~17절), 자동화는 다음 단계.**
+  이번 세션은 의도적으로 스크립트 없이 손으로 진행했다(이해/검증이 먼저, 자동화는 별도
+  작업으로 미룸). 15절의 수동 절차를 스크립트 하나로 묶는 게 다음 후보.
+- **blue-green 시도 시 t3.medium 이상 필요(17절)** — 평소엔 t3.small로 충분하지만, 무중단
+  전환을 실제로 쓰려면 그 순간만큼은 t3.medium 이상이어야 한다. 인스턴스가 지금
+  t3.medium으로 남아있는지 t3.small로 되돌렸는지는 progress.md의 최신 상태를 확인할 것.
