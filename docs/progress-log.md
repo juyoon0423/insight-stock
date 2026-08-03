@@ -2514,6 +2514,107 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
   커밋은 `ci:`(워크플로우 추가), `test:`(의도적 실패), `revert:`(원복),
   `docs:`(문서화) 4개로 의미 단위 분리했다.
 
+## 12. 2026-08-03 세션 — k6 부하테스트: 검색 스레드풀/HikariCP 병목 발견 및 수정
+
+CI(11절)까지 끝난 뒤 로드맵 다음 단계로 부하테스트를 시작한 세션. 처음에는
+단순히 "하이브리드 검색이 동시 부하에서 얼마나 버티는지 수치를 확보하자"는
+목적이었는데, 실제로 돌려보니 인프라(Postgres/Elasticsearch)가 아니라
+애플리케이션 자체의 스레드풀/커넥션풀 설정값이 병목이었다는 게 밝혀졌다 -
+"실측 후 결론" 원칙이 예상과 다른 방향으로 맞아떨어진 사례.
+
+- **옵션 조사 — 실행 전에 코드로 먼저 확인** — 계획을 확정하기 전에
+  `/api/v1/search`와 `/api/v1/answers`의 실제 호출 흐름을 코드로 추적했다.
+  `HybridSearchService.search()`가 `CompletableFuture`로 키워드(ES)+벡터
+  (pgvector, 임베딩 API 호출 포함) 검색을 병렬 실행하고, `/answers`는 이
+  검색 결과에 `PromptBuilder`로 프롬프트를 조립해 `OpenAiChatCompletionClient`
+  (gpt-4o-mini)를 1회 더 호출하는 구조임을 확인했다. `AnswerService.java`에
+  이미 하드코딩된 단가($0.15/1M 입력, $0.60/1M 출력)와 기존 실측 로그
+  (`AnswerServiceManualIT` 2건 합계 $0.0017)를 근거로 `/answers` 요청 1건당
+  비용이 약 $0.00085~0.0015(환율 1,440원/$1 기준 약 1~2원) 수준이라는 걸
+  먼저 확인한 뒤에야 부하 규모를 정했다 - "얼마나 큰 부하를 걸지"를 비용
+  걱정 없이 결정할 수 있는 근거가 됐다. k6는 이미 `/opt/homebrew/bin/k6`에
+  설치돼 있어(brew install 불필요) 로컬 8코어/16GB 머신에서 바로 실행
+  가능함도 확인했고, 기존 검색 품질 측정용 질의 18개(정형 12 + 서술형 6,
+  `backend/src/test/resources/evaluation/`)를 `query` 필드만 뽑아
+  `backend/loadtest/data/queries.json`으로 재사용하기로 했다 - 새 질의를
+  만들 필요가 없었다.
+
+- **옵션 A/C 최초 실행(Before) — 30 VU에서 이미 무너짐** — `GET /api/v1/search`에
+  대해 옵션 A(30 VU ramp, 3분)를 돌렸더니 성공률 79.7%(287/360), 처리량
+  1.74 req/s로 "기준선"치고 예상보다 훨씬 이르게 실패가 나왔다. 이어서
+  옵션 C(20→100 VU ramp, 9분)를 돌리자 성공률이 15.96%(216/1353)까지
+  떨어졌는데, **처리량은 2.42 req/s로 A와 거의 동일**했다 - VU를 3배
+  넘게 늘렸는데 처리량이 안 늘어난다는 게 결정적 단서였다.
+
+- **원인 분석 — "성공한 요청의 지연시간이 그대로"라는 단서로 추적** — 옵션
+  A/C 둘 다 성공한 요청만 따로 보면 지연시간이 거의 동일했다(A: p95=2.14s,
+  C: p95=2.19s). 이는 DB/ES 자체가 부하로 느려진 게 아니라, 대부분의
+  요청이 자원을 못 얻어 큐에서 대기하다 타임아웃(로그에서 `SearchController`
+  처리시간이 실제로 56,925ms까지 찍힌 걸 확인)된다는 뜻이었다. 코드를
+  거슬러 올라가 두 곳을 찾았다:
+  1. `SearchExecutorConfig.java:16` — `Executors.newFixedThreadPool(4, ...)`.
+     검색 1건당 키워드+벡터 태스크 2개가 이 고정 4개 스레드를 전체 요청이
+     공유하고 있었다.
+  2. `application.yml`에 HikariCP 설정이 아예 없어 Spring Boot 기본값
+     (`maximum-pool-size=10`, `connection-timeout=30000ms`)에 암묵적으로
+     의존하고 있었다. 백엔드 로그에서 결정적 증거를 확보했다: `HikariPool-1
+     - Connection is not available, request timed out after 30002ms
+     (total=10, active=10, idle=0, waiting=100)` - 커넥션 10개를 두고
+     최대 100개 요청이 동시에 대기했고, 관찰된 30초 타임아웃 벽이 Hikari의
+     기본 `connection-timeout`과 정확히 일치했다.
+
+  즉 "처리량이 꺾이는 지점"은 인프라 한계가 아니라 동시 요청 2~4건
+  수준에서 이미 시작되고 있었다.
+
+- **수정 — 산정 근거를 먼저 계산한 뒤 적용** — 짐작으로 숫자를 고르지
+  않고 실측값을 근거로 계산했다:
+  - Postgres `max_connections=100`(`SHOW max_connections;`로 실측 확인,
+    이 DB는 백엔드 하나만 쓰므로 다른 앱과의 경쟁 없음)과 목표 동시
+    사용자(현실적 로컬 시나리오로 잡았던 10~50명)를 큐잉 없이 받아내면서
+    100 한도 안에 headroom을 남기는 값으로 Hikari `maximum-pool-size`를
+    10(암묵적 기본값) → **50**로 `application.yml`에 명시했다.
+  - `SearchExecutorConfig`의 스레드풀은 검색 1건당 태스크 2개 중 벡터
+    태스크만 Hikari 커넥션을 점유한다는 구조를 근거로, "벡터용 50개 +
+    키워드(ES 전용, DB 무관)용 50개"가 동시에 돌 수 있도록 Hikari 풀의
+    2배인 **100**으로 정했다(4 → 100). I/O 대기가 대부분이라 로컬 머신
+    코어 수(8)보다 스레드가 많아도 안전하다는 점도 근거로 남겼다. 기존에
+    하드코딩돼 있던 값을 `hybrid-search.executor.pool-size`로
+    externalize해서 `@Value`로 주입받게 바꿔, 이 프로젝트의 다른 설정값과
+    같은 패턴을 따르게 했다.
+  - `./gradlew test`(기본 스코프)로 컨텍스트 로딩이 여전히 정상인지
+    확인한 뒤 커밋했다.
+
+- **재검증(After) — 동일 조건으로 재실행, 개선 폭을 숫자로 확보** — 옵션
+  A: 성공률 79.7%→**100%**(1079/1079), 처리량 1.74→**5.98 req/s(3.4배)**.
+  옵션 C: 성공률 15.96%→**94.82%**(2419/2551), 처리량 2.42→**4.72
+  req/s(1.95배)**, 실제 완료된 요청 수는 216→2419건(**11.2배**). Hikari
+  "Connection is not available" 로그도 3,584건→324건(11배 감소)으로
+  줄었다. 옵션 C가 여전히 100%가 아닌 이유(80~100 VU 구간에서 일부
+  대기)는 버그가 아니라 Hikari 풀을 50으로 잡았으니 그보다 훨씬 많은
+  동시 요청에서는 대기가 생기는 게 설계대로라는 점도 함께 기록했다 -
+  Before는 이 구간에서 아예 실패했지만(84% 실패) After는 느려지더라도
+  대부분(94.82%) 결국 성공한다는 차이(graceful degradation).
+
+- **`/answers` — 502 3건 전부 원인을 서버 로그로 특정** — 5 VU/50건 캡
+  테스트에서 47/50 성공, 3건 502. 서버 로그를 대조한 결과 3건 전부
+  `HttpClientErrorException$TooManyRequests: 429`(OpenAI 조직 단위
+  TPM 한도 "Limit 200000, Used ~200000") - **우리 서버 버그가 아니라
+  OpenAI 쪽 rate limit**이었다. 다만 `GlobalExceptionHandler.handleRagApi()`
+  가 원인과 무관하게 항상 HTTP 502로 뭉뚱그리기 때문에, 클라이언트가
+  받는 상태 코드만으로는 "OpenAI가 잠깐 막은 것"과 "실제 장애"를 구분할
+  방법이 원천적으로 없고 서버 로그 대조가 필수라는 것도 확인했다. 이
+  문제와 `OpenAiChatCompletionClient`의 재시도/백오프 부재는 이번
+  세션에서 의도적으로 고치지 않고 `docs/progress.md` "다음 세션
+  논의거리"에 별도 resilience 개선 후보로 남겼다.
+
+- **문서화 및 정리** — `docs/loadtest.md`를 새로 만들어 도구 구조
+  (`backend/loadtest/`), Before 진단, 수정 근거, Before/After 비교표,
+  실행 방법, 남은 이슈를 정리했다. 커밋은 `fix:`(스레드풀/Hikari 설정
+  변경 + 부하테스트 도구 일체)와 `docs:`(loadtest.md 신설 + progress.md
+  논의거리 갱신) 2개로 분리했다. 작업 종료 시 로컬 백엔드(`bootRun`
+  프로세스)와 `docker compose` 인프라를 정리(컨테이너 정지, 볼륨은
+  유지)하고 정상 종료를 확인했다.
+
 **이로써 무중단 배포(Blue-Green + ShedLock)가 수동 절차 기준으로 실물
 검증까지 완료됐다.** 자동화(스크립트 하나로 묶기)는 의도적으로 다음
 단계로 미뤘다. 인스턴스 크기(t3.medium 유지 여부)와 정지 여부는
