@@ -5,6 +5,13 @@ spring:
     url: jdbc:postgresql://localhost:5432/insight_stock
     username: ${POSTGRES_USER}
     password: ${POSTGRES_PASSWORD}
+    hikari:
+      # 기본값(10)에 암묵적으로 의존하지 않고 명시 - k6 부하테스트(backend/loadtest/)에서
+      # 기본값 10으로는 동시 요청 100건 중 최대 100건이 커넥션을 기다리며 30초 타임아웃으로
+      # 실패하는 걸 실측했다(HikariPool-1 ... waiting=100 로그). Postgres max_connections=100
+      # (실측 확인, 이 DB는 백엔드 하나만 쓰므로 경쟁 없음)이고 목표 동시 사용자 10~50명을
+      # 큐잉 없이 받아내면서 한도 안에 headroom을 남기는 값으로 50을 선택(docs/loadtest.md 참고).
+      maximum-pool-size: 50
   jpa:
     hibernate:
       ddl-auto: validate
@@ -95,6 +102,15 @@ hybrid-search:
   top-k: 10
   # RRF 상수(Cormack et al., 2009 권장값 - 순위 차이의 영향을 완만하게 만듦).
   rrf-k: 60
+  executor:
+    # 검색 1건당 키워드(ES)+벡터(pgvector) 태스크 2개가 이 풀을 공유한다. 기존 고정값
+    # 4는 k6 부하테스트에서 명확한 병목으로 확인됐다(30 VU만으로도 p95 30초대, 성공률
+    # 80%) - 벡터 태스크만 Hikari 커넥션을 점유하므로, 풀을 datasource.hikari.
+    # maximum-pool-size(50)와 같은 크기로만 두면 DB와 무관한 키워드(ES) 태스크까지
+    # 스레드풀 단에서 또 직렬화된다. "벡터용 50 + 키워드용 50"이 동시에 돌 수 있도록
+    # Hikari 풀의 2배로 잡았다 - I/O 대기가 대부분이라 CPU 코어 수보다 많아도 안전하다
+    # (docs/loadtest.md 참고).
+    pool-size: 100
   dedup:
     # content가 완전히 동일한(공백만 다른 것도 포함) 청크를 대표 1건으로 합칠지 여부.
     # 2026-07-23 발견: 일괄신고/다회차 발행 관행 때문에 같은 문구가 여러 공시에
