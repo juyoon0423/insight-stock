@@ -19,9 +19,11 @@
   프론트엔드 전체 완성(스키마 / 감지 서비스+스케줄러 / 조회·읽음 API /
   헤더 배지+드롭다운 목록, Playwright 실제 브라우저 검증까지 완료),
   **AWS 배포(EC2 + Nginx) + Vercel 프론트엔드 배포 — 실물 브라우저 검증까지
-  완료**(EC2 t3.small에 docker-compose+jar 직접 실행, Nginx로 80→8080
-  리버스 프록시, Vercel에 프론트 배포, HTTPS 프론트→HTTP 백엔드 간 Mixed
-  Content 차단을 발견해 Next.js rewrite 프록시로 해결, 회원가입→로그인→
+  완료**(EC2 t3.small에 docker-compose+jar 직접 실행, Nginx로 80→(현재
+  라이브 포트, upstream 구조 — 무중단 배포 세션에서 전환, 아래 "무중단
+  배포" 항목 참고) 리버스 프록시, Vercel에 프론트 배포, HTTPS 프론트→HTTP
+  백엔드 간 Mixed Content 차단을 발견해 Next.js rewrite 프록시로 해결,
+  회원가입→로그인→
   질문답변→관심회사 등록→알림 배지까지 실제 브라우저로 끝까지 확인),
   **무중단 배포(ShedLock + Blue-Green) — 수동 절차 기준 실물 검증까지
   완료**(4개 스케줄러에 ShedLock 적용, Nginx를 upstream 블록 구조로 전환,
