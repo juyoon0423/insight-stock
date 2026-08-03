@@ -71,7 +71,8 @@ HNSW 인덱스 속도(59배)나 무중단 curl 응답시간처럼 "실측 후 �
   브라우저(Playwright) 검증 완료. `notification.collector.enabled: false`
   (기본 비활성화, 다른 collector와 동일 관례) 유지 중.
 - **AWS 배포(1차)도 완전히 끝났고 다시 조사할 필요 없음**: EC2
-  `i-00bdd2e8b984f5d0f`(현재 t3.medium, 평소 stopped)에 docker-compose(Postgres+
+  `i-00bdd2e8b984f5d0f`(현재 t3.small, stopped — blue-green 검증 종료 후
+  2026-07-31 세션에서 되돌려놓은 상태)에 docker-compose(Postgres+
   Elasticsearch)+jar 직접 실행, Nginx가 80→(현재 라이브 포트) 리버스 프록시
   (14절 upstream 구조로 전환됨, 8080/8081/8082 직접 접근은 보안 그룹에서
   막혀 있어 외부 비공개), Vercel `https://frontend-steel-omega-
@@ -229,7 +230,7 @@ HNSW 인덱스 속도(59배)나 무중단 curl 응답시간처럼 "실측 후 �
 | 빌드 도구 | Gradle 8.11.1 (wrapper 포함) |
 | DB | PostgreSQL 16 + pgvector (`pgvector/pgvector:pg16`) |
 | 검색엔진 | Elasticsearch 8.15.3 + Nori(한글 형태소 분석기) |
-| 마이그레이션 | Flyway (V1~V6) |
+| 마이그레이션 | Flyway (V1~V7) |
 | ORM | Hibernate 6.6.x (JPA), pgvector 매핑용 커스텀 UserType |
 | 프론트엔드 | Next.js 16(App Router, TypeScript, Tailwind CSS) |
 | 인증 | Spring Security + 자체 발급/검증 JWT(HS256, access 30분 / refresh 14일 Stateless) |
