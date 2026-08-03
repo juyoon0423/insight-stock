@@ -33,7 +33,7 @@ class RrfFuserTest {
         Map<Long, RrfScore> byId = toMap(result);
         assertTrue(byId.get(1L).score() > byId.get(2L).score(),
                 "양쪽에 등장한 chunk 1이 한쪽에만 등장한 chunk 2보다 점수가 높아야 한다");
-        assertEquals(2L, result.get(0).chunkId(), "최종 정렬 1위는 chunk 1이어야 한다");
+        assertEquals(1L, result.get(0).chunkId(), "최종 정렬 1위는 chunk 1이어야 한다");
     }
 
     @Test
