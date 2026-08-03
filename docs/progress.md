@@ -1,6 +1,6 @@
 # 진행 상황 (Progress)
 
-마지막 업데이트: 2026-07-31
+마지막 업데이트: 2026-08-03
 
 **상세 히스토리는 [docs/progress-log.md](./progress-log.md) 참고** — 각 단계를
 왜/어떻게 했는지, 실측 검증 결과, 트러블슈팅 전부 그 문서에 있다. 이 문서는
@@ -26,7 +26,15 @@
   **무중단 배포(ShedLock + Blue-Green) — 수동 절차 기준 실물 검증까지
   완료**(4개 스케줄러에 ShedLock 적용, Nginx를 upstream 블록 구조로 전환,
   실제 8081→8082 전환을 curl 무중단 로그+ShedLock 중복방지 로그로 증명 -
-  상세는 [docs/deploy.md](./deploy.md) 13~17절, progress-log.md 10절).
+  상세는 [docs/deploy.md](./deploy.md) 13~17절, progress-log.md 10절),
+  **GitHub Actions CI(테스트 자동화) — 실물 성공/실패 케이스 검증까지
+  완료**(`main` push/PR 트리거, 로컬에서 검증된 `docker-compose.yml`을
+  CI 러너 안에서 그대로 재사용해 Postgres+Elasticsearch 기동 후
+  `./gradlew test` 실행, 기본 스코프에 필요한 5개 값만 GitHub Secrets로
+  등록, 정상 실행(3m18s)/의도적 실패→failure 표시/원복 후 재확인(2m26s)
+  전부 실제 Actions 실행으로 검증 - 상세는 [docs/ci.md](./ci.md),
+  progress-log.md 11절). **CD(자동 배포)는 EC2를 평소 꺼두는 운영
+  방침과 안 맞아 이번 범위에서 의도적으로 제외** — 계속 수동 배포 유지.
 - **인스턴스 운영 방침**: 평소엔 EC2 인스턴스를 꺼둔다(비용 관리 — 유료 API
   최소화 원칙과 같은 맥락). **t3.small은 blue-green(두 인스턴스 동시 실행)을
   못 버틴다는 게 2026-07-31 세션에서 실측으로 확정됐다** - 8082를 띄우는
@@ -44,12 +52,15 @@
 ## 다음 세션 시작점
 
 **4단계(알림) → AWS 배포(EC2+Nginx+Vercel) → 무중단 배포(ShedLock+
-Blue-Green, 수동 절차 검증 완료)까지 순서대로 끝났다.** progress-log.md의
-원래 추천 순서("데이터 규모 확대 → 검색 품질 측정 → 4단계 알림 → AWS
-배포")에 이어 2026-07-28 세션에서 정한 "무중단 배포 → 관측성" 로드맵 중
-무중단 배포까지 완료됐다. 다음 우선순위는 **관측성(모니터링/로깅)**,
-그 다음 후보가 **무중단 배포 자동화**(15절 수동 절차를 스크립트로 묶기 -
-이번 세션에 의도적으로 뒤로 미룸)다.
+Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동화)까지
+순서대로 끝났다.** 다음 우선순위는 **부하테스트(k6 또는 Gatling)** —
+하이브리드 검색 API(`/api/v1/search` 또는 `/api/v1/answers`)에 동시 부하를
+걸어 실제 처리량(throughput)/레이턴시 수치를 확보하는 게 목표다. 지금까지
+HNSW 인덱스 속도(59배)나 무중단 curl 응답시간처럼 "실측 후 결론"을 내온
+것과 같은 결로, 부하 상황에서의 실제 수치 없이 성능을 짐작하지 않기
+위함이다. **관측성(모니터링/로깅)**과 **무중단 배포 자동화**(15절 수동
+절차를 스크립트로 묶기)는 여전히 미착수 상태로 남아있는 후보이고, 이번에
+부하테스트를 먼저 하기로 정했다.
 
 - 알림 기능(백엔드+프론트엔드)은 완전히 끝났고 다시 조사할 필요 없음:
   `notification/`(`NotificationDetectionService`+`Scheduler`,
@@ -77,9 +88,18 @@ Blue-Green, 수동 절차 검증 완료)까지 순서대로 끝났다.** progres
   검증 로그(무중단 curl 400/400, ShedLock 중복방지 로그)가 전부 있다.
   **자동화(15절 수동 절차를 스크립트 하나로 묶기)는 의도적으로 다음
   단계로 미뤘다** - 필요해지면 이걸 먼저 고려.
-- **관측성(다음 우선순위)**: 아직 설계 자체를 시작 안 함. 로그
+- **CI(GitHub Actions 테스트 자동화)도 완전히 끝났고 다시 설계할 필요
+  없음**: `.github/workflows/ci.yml`이 `main` push/PR에서 로컬과 동일한
+  `docker-compose.yml`로 Postgres+Elasticsearch를 띄우고 `./gradlew
+  test`(기본 스코프, `@Tag("manual")` 제외)를 돌린다. 필요한 Secrets 5개
+  (`POSTGRES_USER`/`POSTGRES_PASSWORD`/`DART_API_KEY`/`OPENAI_API_KEY`/
+  `JWT_SECRET`)와 그 근거, 정상/실패/원복 세 가지 실물 Actions 실행
+  결과가 [docs/ci.md](./ci.md)와 progress-log.md 11절에 전부 있다.
+  **CD(자동 배포)는 EC2 상시 운영 방침이 정해지기 전까지 의도적으로
+  범위 밖** - 아래 "다음 세션 논의거리" 참고.
+- **관측성**: 아직 설계 자체를 시작 안 함. 로그
   수집(현재는 EC2 로컬 `app.log` 파일뿐), 헬스체크/알람, APM 등 범위를
-  어디까지 잡을지부터 옵션을 비교해 제안할 것.
+  어디까지 잡을지부터 옵션을 비교해 제안할 것 — 부하테스트 다음 후보.
 - 시작 순서(로컬 개발): `docker compose up -d`(postgres/elasticsearch
   healthy 확인) → `cd backend && ./gradlew bootRun` → `cd frontend && npm
   run dev`. `.env`에 `DART_API_KEY`/`POSTGRES_USER`/`POSTGRES_PASSWORD`/
@@ -87,6 +107,18 @@ Blue-Green, 수동 절차 검증 완료)까지 순서대로 끝났다.** progres
 
 ## 다음 세션 논의거리 (우선순위 미정)
 
+- **CI 실행 시간 편차(3m18s vs 2m15s vs 2m26s) — Docker layer cache/Gradle
+  cache 도입 여지, 지금은 문제 아니라 우선순위 낮음** — 매번
+  `docker compose up -d --build`로 Elasticsearch 커스텀 이미지(Nori
+  플러그인)를 처음부터 다시 빌드하기 때문에 실행마다 소요 시간이
+  달라진다(docs/ci.md, progress-log.md 11절). 3분대로 충분히 빠르다고
+  판단해 원인 규명이나 캐싱 도입은 지금 하지 않았음 - 실행 빈도가 늘거나
+  더 느려지면 Docker layer cache(`actions/cache` 등) 도입을 고려.
+- **CD(자동 배포)는 EC2 상시 운영 여부가 정해지면 재검토** — 이번 CI
+  세션에서 CD를 의도적으로 범위 밖에 뒀다(EC2를 평소 꺼두는 운영 방침과
+  "push마다 자동 배포"가 안 맞음). 만약 나중에 EC2를 상시 켜두는 쪽으로
+  운영 방침이 바뀌거나 Elastic IP/도메인·TLS가 갖춰지면, 그때 CD 도입을
+  다시 논의할 것.
 - **청킹/임베딩/corpCode 동기화 스케줄러를 나중에 활성화할 때 `@SchedulerLock`
   추가를 빠뜨리지 말 것** — 무중단 배포 도입(2026-07-31)으로 공시 수집/원문
   수집/색인/알림 감지 4개 스케줄러에는 ShedLock을 적용했지만, 현재

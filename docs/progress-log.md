@@ -2424,6 +2424,96 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
   "알려진 제약" 목록에서 "무중단 배포는 이번 범위 밖" 항목을 제거하고
   "수동 절차는 검증 완료, 자동화는 다음 단계"로 갱신했다.
 
+## 11. 2026-08-03 세션 — GitHub Actions CI(테스트 자동화) 구축, CD는 의도적으로 범위 제외
+
+무중단 배포(10절)까지 끝난 뒤 관측성 전에, "커밋마다 테스트가 자동으로 도는가"라는
+더 기초적인 안전망이 없다는 걸 짚고 CI부터 붙이는 세션. CD(자동 배포)는 이번에
+같이 하지 않기로 처음부터 선을 그었다 - EC2를 평소 꺼두는 운영 방침(10절,
+`docs/deploy.md`)과 "push할 때마다 자동 배포"가 애초에 안 맞기 때문이다. 인스턴스가
+꺼져 있는데 배포 파이프라인이 돌면 그냥 실패하거나, 억지로 맞추려면 "배포 전에
+인스턴스부터 켠다"는 훨씬 복잡한 오케스트레이션이 필요해진다 - 지금 얻는 이득에
+비해 복잡도가 크다고 판단해 CD는 통째로 다음으로 미뤘다.
+
+- **시작 전에 실물부터 확인 — 추측으로 Secrets부터 만들지 않기** — CLAUDE.md의
+  "상상으로 설계하지 않는다" 원칙 그대로, GitHub Secrets를 뭘 등록해야 하는지부터
+  코드로 확인했다. `application-test.yml`은 존재하지 않아 테스트도
+  `src/main/resources/application.yml`을 그대로 쓴다는 것부터 확인한 뒤,
+  `@Tag("manual")`이 없는(=기본 `./gradlew test`에 포함되는) 테스트 중
+  `@SpringBootTest`로 실제 Spring 컨텍스트를 띄우는 것이 몇 개인지 grep으로
+  대조했다. 결과: 딱 3개 — `InsightStockApplicationTests`(contextLoads),
+  `NotificationServiceTest`, `NotificationDetectionServiceTest`(둘 다 로컬 실
+  DB에 데이터를 넣고 `@Transactional`로 롤백하는 방식, 유료 API 호출 없음을
+  코드로 재확인). 나머지(`XmlTextExtractorTest`, `CitationParserTest`,
+  `PromptBuilderTest`, `RrfFuserTest`, `SearchQualityEvaluatorTest`)는 컨텍스트
+  로딩 자체가 없는 순수 단위 테스트라 애초에 환경변수가 필요 없다.
+
+  이 3개가 컨텍스트를 띄우는 데 실제로 뭐가 필요한지도 짐작하지 않고
+  `@Value`가 박힌 생성자를 하나씩 확인했다. `DartListClient`/`DartDocumentClient`/
+  `DartCorpCodeClient`/`OpenAiEmbeddingClient`/`OpenAiChatCompletionClient` 전부
+  생성자 파라미터로 API 키를 즉시 주입받는 구조라, 값이 아예 없으면(플레이스홀더
+  해석 실패) 컨텍스트가 못 뜬다 - 그런데 이 3개 테스트 안에서는 이 클라이언트들을
+  실제로 호출하지 않고 빈 생성만 되므로, `DART_API_KEY`/`OPENAI_API_KEY`는 아무
+  문자열이어도(더미여도) 무방하다는 걸 확인했다. 반면 `JwtTokenProvider`는
+  생성자에서 바로 `Keys.hmacShaKeyFor(secret.getBytes(UTF_8))`로 HS256 키를
+  만들기 때문에 `JWT_SECRET`은 더미라도 **32바이트 이상**이어야 한다(짧으면
+  `WeakKeyException`으로 기동 자체가 실패) - 이 조건을 미리 코드로 확인했기 때문에
+  `openssl rand -hex 32`로 조건을 맞춰 등록했다. `POSTGRES_USER`/`POSTGRES_PASSWORD`는
+  실제 datasource 연결에 쓰이므로 값 자체는 자유지만(CI 전용 임시 DB라 운영 값과
+  무관) placeholder는 반드시 채워져 있어야 한다. `CORS_ALLOWED_ORIGINS`는
+  `application.yml`에 기본값이 있어 등록 대상에서 제외했다.
+
+  이렇게 확인이 끝난 뒤에야 `gh secret set`으로 5개(`POSTGRES_USER`,
+  `POSTGRES_PASSWORD`, `DART_API_KEY`, `OPENAI_API_KEY`, `JWT_SECRET`)를
+  등록했다 - 전부 실제로는 민감하지 않은 값(운영 키/계정과 무관, DART·OpenAI는
+  호출조차 안 됨)이지만, "비밀값은 워크플로우 파일에 평문으로 남기지 않는다"는
+  실무 관례를 그대로 지키기 위해 Secrets로 등록하기로 사용자와 먼저 합의했다.
+
+- **`services:` 블록 대신 기존 `docker-compose.yml`을 CI에서 그대로 재사용** —
+  GitHub Actions에서 Postgres/Elasticsearch를 띄우는 보편적인 방법은
+  `jobs.<job>.services:`에 새로 정의하는 것이지만, 이번 프로젝트의
+  Elasticsearch는 공식 이미지가 아니라 `docker/elasticsearch/Dockerfile`로 Nori
+  한글 형태소 분석기 플러그인을 추가 설치한 커스텀 이미지다. `services:`는
+  기존 이미지를 그대로 받아쓰는 용도라 이 커스텀 빌드를 넣으려면 별도 빌드
+  스텝이 또 필요해지고, 결국 로컬(`docker-compose.yml`)과 CI(`services:`) 두
+  군데에 같은 인프라 설정(포트, 헬스체크, 볼륨)을 이중으로 관리하게 된다 -
+  둘이 미묘하게 어긋날 여지가 생긴다는 게 걱정이었다. 그래서 `.github/workflows/ci.yml`은
+  루트 `docker-compose.yml`을 CI 러너 안에서 `docker compose up -d --build`로
+  그대로 실행하고, 이미 그 파일에 정의된 헬스체크(`pg_isready`, ES
+  `_cluster/health`)가 `healthy`로 바뀔 때까지 `docker inspect`로 폴링만 하는
+  방식을 택했다 - 이미 로컬에서 여러 세션에 걸쳐 검증된 구성을 그대로 재사용하는
+  쪽이 새로 옮겨 적는 것보다 안전하다는 판단.
+
+- **검증 — 성공/실패 둘 다 실물 Actions 실행으로 확인** — 워크플로우를 만들고
+  끝내지 않고, 실제로 `main`에 push해 Actions 탭에서 세 가지를 순서대로 확인했다.
+
+  1. **정상 실행**: 커밋 `024c925`(`ci: GitHub Actions로 백엔드 테스트 자동화
+     워크플로우 추가`) push → run `30783475745` 통과. job 전체 3분 18초,
+     그 중 `./gradlew test` 자체는 `BUILD SUCCESSFUL in 1m 31s` - 나머지는
+     `docker compose up -d --build`(Elasticsearch 커스텀 이미지 빌드 포함)와
+     헬스체크 대기 시간.
+  2. **의도적 실패**: `RrfFuserTest`의 assertion 하나를 일부러 깨서(기대값
+     `1L` → `2L`) 커밋 `003c71b`로 push → run `30783663714`에서 "Run tests"
+     스텝이 실제로 `X`(실패)로 표시되고 workflow conclusion이 `failure`로
+     남는 것을 확인했다. 이때 `if: failure()`로 걸어둔 "테스트 리포트
+     아티팩트 업로드" 스텝도 이 실행에서만 실제로 동작하는 것까지 함께
+     확인했다(성공 케이스에서는 스킵됨) - CI가 그냥 초록불만 켜는 게 아니라
+     실패를 실패로 정확히 전달하는지를 실물로 검증한 것.
+  3. **원복 후 재확인**: assertion을 `1L`로 되돌린 커밋 `d526382`를 push →
+     run `30783802225`가 다시 성공(2분 26초)으로 돌아오는 것을 확인했다.
+
+  세 실행의 소요 시간(3m18s / 2m15s / 2m26s)이 서로 다른데, 이는 매번
+  `docker compose up -d --build`로 인프라를 새로 띄우기 때문(Docker 레이어
+  캐시가 없어 Elasticsearch 커스텀 이미지를 매번 처음부터 빌드) - 지금은
+  3분대로 충분히 빠르다고 판단해 원인 규명이나 캐싱 도입은 하지 않고
+  "다음에 고려할 것"으로만 `docs/ci.md`와 `docs/progress.md`에 남겼다.
+
+- **문서화** — `docs/ci.md`를 새로 만들어 워크플로우 단계별 설명, `services:`
+  대신 `docker-compose.yml`을 재사용한 이유, 5개 Secrets 각각의 근거(어떤
+  코드가 그 값을 요구하는지)와 CI에서 실제로 채운 값의 성격(더미 가능
+  여부/길이 제약), 위 세 실행의 실측 결과(run ID, 소요 시간)를 정리했다.
+  커밋은 `ci:`(워크플로우 추가), `test:`(의도적 실패), `revert:`(원복),
+  `docs:`(문서화) 4개로 의미 단위 분리했다.
+
 **이로써 무중단 배포(Blue-Green + ShedLock)가 수동 절차 기준으로 실물
 검증까지 완료됐다.** 자동화(스크립트 하나로 묶기)는 의도적으로 다음
 단계로 미뤘다. 인스턴스 크기(t3.medium 유지 여부)와 정지 여부는
