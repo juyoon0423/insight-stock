@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # docker-compose.yml이 프로젝트 루트 .env를 그대로 읽고(POSTGRES_USER/PASSWORD),
+      # backend/build.gradle의 test 태스크도 SPRINGDOTENV_DIRECTORY=".."로 같은 .env를
+      # 읽는다 - 로컬과 동일한 방식을 CI에서도 그대로 재사용한다.
+      - name: Create .env
+        run: |
+          cat <<EOF > .env
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          DART_API_KEY=${{ secrets.DART_API_KEY }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          EOF
+
+      # 로컬 개발에서 이미 검증된 docker-compose.yml(pgvector + Nori 커스텀 ES 이미지)을
+      # 그대로 실행한다. GitHub Actions의 services: 블록으로 새로 정의하면 이 설정을
+      # 이중으로 관리해야 하고, 커스텀 ES 이미지(Nori 플러그인 빌드)를 다시 옮겨 적어야
+      # 한다 - 이미 검증된 구성을 재사용하는 쪽이 더 안전하다(docs/ci.md 참고).
+      - name: Start infra (Postgres + Elasticsearch)
+        run: docker compose up -d --build
+
+      - name: Wait for infra to become healthy
+        run: |
+          for svc in insight-stock-postgres insight-stock-elasticsearch; do
+            echo "waiting for $svc..."
+            timeout 180 bash -c "until [ \"\$(docker inspect -f '{{.State.Health.Status}}' $svc 2>/dev/null)\" = 'healthy' ]; do sleep 5; done"
+            echo "$svc is healthy"
+          done
+
+      - name: Run tests (default scope, @Tag("manual") excluded)
+        working-directory: backend
+        run: ./gradlew test
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-test-report
+          path: backend/build/reports/tests/test
+
+      - name: Stop infra
+        if: always()
+        run: docker compose down
