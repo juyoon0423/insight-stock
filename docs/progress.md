@@ -108,6 +108,32 @@ HNSW 인덱스 속도(59배)나 무중단 curl 응답시간처럼 "실측 후 �
 
 ## 다음 세션 논의거리 (우선순위 미정)
 
+- **`GlobalExceptionHandler`가 `/answers`의 모든 실패를 원인 불문하고 502로
+  뭉뚱그림 — 별도 개선 후보(재시도/백오프와는 별개)** — 부하테스트(k6)
+  중 실제로 발생한 502 3건은 서버 로그 대조로 전부 OpenAI 429(rate
+  limit)임을 확인했지만, `handleRagApi()`(`api/GlobalExceptionHandler.java:55-63`)가
+  원인과 무관하게 항상 502/`LLM_UNAVAILABLE`만 반환하므로 클라이언트는
+  "OpenAI가 일시적으로 막은 것"과 "실제 서버 장애"를 상태 코드만으로
+  구분할 방법이 없다. 개선 방향 예시: 429는 429로 그대로 전달하거나
+  별도 errorCode(예: `LLM_RATE_LIMITED`)로 분리. 이번 부하테스트
+  세션에서는 의도적으로 고치지 않고 발견만 기록(자세한 재현/로그는
+  docs/loadtest.md 참고).
+- **`OpenAiChatCompletionClient`에 재시도/백오프가 없음 — resilience 개선
+  후보(Retry/Circuit breaker 등)** — 부하테스트(k6, `backend/loadtest/`)
+  중 `/answers`에서 502(`LLM_UNAVAILABLE`) 3건이 실제로 발생했고, 서버
+  로그로 원인을 추적한 결과 전부 OpenAI 쪽 TPM(분당 토큰) rate limit
+  (`HttpClientErrorException$TooManyRequests: 429`, "Rate limit reached
+  for gpt-4o-mini ... Limit 200000")이었다 — 우리 버그는 아니었음.
+  `OpenAiEmbeddingClient`(배치 인덱싱용)와 달리 `OpenAiChatCompletionClient`는
+  429를 받아도 즉시 `RagApiException`으로 던지고 끝(재시도 없음,
+  `OpenAiChatCompletionClient.java:42-50`) - 게다가
+  `GlobalExceptionHandler.handleRagApi()`가 원인과 무관하게 항상 502로
+  뭉뚱그려서, 클라이언트 입장에서는 "OpenAI가 잠깐 막은 것"과 "실제
+  장애"를 상태 코드만으로 구분할 수 없다(서버 로그 대조가 필수). 트래픽이
+  더 늘면 이런 일시적 429가 사용자에게 그대로 실패로 노출된다 - 지수
+  백오프 재시도(임베딩 클라이언트와 같은 패턴) 또는 Resilience4j 같은
+  Circuit Breaker 도입을 다음 후보로 남긴다. 이번 세션에서는 의도적으로
+  고치지 않고 발견만 기록.
 - **CI 실행 시간 편차(3m18s vs 2m15s vs 2m26s) — Docker layer cache/Gradle
   cache 도입 여지, 지금은 문제 아니라 우선순위 낮음** — 매번
   `docker compose up -d --build`로 Elasticsearch 커스텀 이미지(Nori
