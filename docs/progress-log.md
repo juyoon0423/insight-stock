@@ -2104,7 +2104,7 @@ user-data 스크립트) → `1a070de`(문서 공백 보완, 프론트엔드 `.en
   다시 볼 때 "Claude Code가 t3.small을 측정해서 골랐다"고 오해하지 않도록
   출처를 분명히 남긴다).
 
-- **보안 그룹 + 키페어 세팅** — `insightstock-sg`(`sg-040b14e68eef2ff5d`)를
+- **보안 그룹 + 키페어 세팅** — `insightstock-sg`(`<SECURITY_GROUP_ID>`)를
   새로 만들어 SSH(22)는 본인 퍼블릭 IP(`/32`)만 허용(`0.0.0.0/0` 금지),
   HTTP(80)/HTTPS(443)는 전체 허용, 8080(백엔드 API)도 이 시점엔 검증
   편의를 위해 전체 허용해뒀다(문서에 "임시로만, 나중에 Nginx 뒤로 감출
@@ -2115,8 +2115,8 @@ user-data 스크립트) → `1a070de`(문서 공백 보완, 프론트엔드 `.en
 
 - **EC2 인스턴스 생성 + user-data 자동화** — Amazon Linux 2023 최신 AMI를
   `describe-images`로 조회해 `run-instances`(t3.small, 태그
-  `Name=insightstock-backend`)로 생성, 인스턴스 ID `i-00bdd2e8b984f5d0f`,
-  최초 퍼블릭 IP `43.201.85.100`. `deploy/user-data.sh`를 최초 버전부터
+  `Name=insightstock-backend`)로 생성, 인스턴스 ID `<INSTANCE_ID>`,
+  최초 퍼블릭 IP `<OLD_PUBLIC_IP>`. `deploy/user-data.sh`를 최초 버전부터
   작성해 최초 부팅 시 Docker + Docker Compose v2 플러그인(AL2023 dnf
   저장소에 없어 GitHub 릴리스 바이너리로 설치)을 자동 설치하게 했다 -
   "매번 수동 설치하지 않아도 재현 가능하게"가 목표였다.
@@ -2147,7 +2147,7 @@ user-data 스크립트) → `1a070de`(문서 공백 보완, 프론트엔드 `.en
   & disown`으로 SSH 세션 종료 후에도 유지되게 백엔드를 띄웠고, 로그에서
   Flyway 마이그레이션 6건 적용 + Tomcat 8080 포트 기동 + DB 연결 성공을
   확인했다. 이어서 3단계로 실물 검증했다: ①외부에서
-  `curl http://43.201.85.100:8080/actuator/health` → `{"status":"UP"}`,
+  `curl http://<OLD_PUBLIC_IP>:8080/actuator/health` → `{"status":"UP"}`,
   ②EC2 내부에서 `pg_isready`(accepting connections)와 Elasticsearch
   `_cluster/health` → `green` 개별 확인, ③실제 API 호출로 회원가입(`POST
   /api/v1/auth/signup` → 201)과 로그인(`POST /api/v1/auth/login` → 200,
@@ -2192,7 +2192,7 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
 개로 나눴다.
 
 - **인스턴스 재기동 + 상태 확인** — `start-instances`로 켜서 새 퍼블릭 IP
-  `3.36.124.56`을 받았다. `docker ps`로 확인하니 Postgres/Elasticsearch
+  `<OLD_PUBLIC_IP>`을 받았다. `docker ps`로 확인하니 Postgres/Elasticsearch
   컨테이너는 재시작 정책 덕분에 자동으로 healthy 상태까지 복구돼 있었지만,
   jar로 직접 띄운 백엔드 프로세스는 재부팅 시 살아남지 않는다는 8절의 제약
   그대로 죽어 있어 `nohup java -jar app.jar ...`로 다시 띄웠다(로컬에서
@@ -2210,7 +2210,7 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
   재부팅 시 자동 시작을 등록했다(jar 프로세스와 달리 Nginx는 이제부터는
   재부팅 때마다 다시 띄울 필요가 없다). 로컬(`curl
   http://localhost/actuator/health` on EC2)과 외부(`curl
-  http://3.36.124.56/...`) 양쪽에서 80번 정상 응답을 확인한 뒤, 보안
+  http://<OLD_PUBLIC_IP>/...`) 양쪽에서 80번 정상 응답을 확인한 뒤, 보안
   그룹에서 8080 전체 허용 규칙(`sgr-08677622bb0765459`)을
   `revoke-security-group-ingress`로 제거했다. 최종 검증: 80번은
   `{"status":"UP"}`, 8080번은 `curl -m 8`이 타임아웃(exit 28)으로
@@ -2228,7 +2228,7 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
   부분만 사용자에게 URL을 전달하고 직접 인증을 완료해달라고 요청한 뒤 이어
   갔다(에이전트가 대신 로그인할 수 없는 부분이라 사람 개입이 필요했음).
   `vercel env add NEXT_PUBLIC_API_BASE_URL production`으로 처음엔 EC2 IP를
-  그대로(`http://3.36.124.56`) 넣고 `vercel --prod`로 첫 배포, 프로덕션
+  그대로(`http://<OLD_PUBLIC_IP>`) 넣고 `vercel --prod`로 첫 배포, 프로덕션
   URL은 `https://frontend-steel-omega-0zye89ut4w.vercel.app`로 고정
   alias됐다(재배포해도 이 URL은 유지됨).
 
@@ -2239,7 +2239,7 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
   배치가 동시에 돌고 있었음)를 의심해 다른 이메일로 재시도했지만 똑같이
   실패했고, 같은 요청을 curl로 그대로 재현하니 `201 Created`로 정상
   응답해 서버 문제가 아님을 확인했다. `read_network_requests`로 브라우저
-  네트워크 로그를 보니 `POST http://3.36.124.56/api/v1/auth/signup`에
+  네트워크 로그를 보니 `POST http://<OLD_PUBLIC_IP>/api/v1/auth/signup`에
   대해 매번 `statusCode: 503`이 찍혔는데, **CORS 프리플라이트(OPTIONS)
   요청 자체가 한 번도 발생하지 않았다** - 이게 결정적 단서였다. 페이지
   컨텍스트에서 직접 `fetch()`를 실행해보니 `TypeError: Failed to fetch`만
@@ -2340,8 +2340,8 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
   일치했다. 발생한 ERROR 2건은 기존에 알려진 무관한 이슈(감사보고서 ZIP
   파일명 불일치, progress.md에 이미 기록됨)였다. → 커밋 `0e8d9ff`
 
-- **2단계: EC2 blue-green 준비** — 인스턴스(`i-00bdd2e8b984f5d0f`,
-  당시 t3.small)를 시작(새 IP `13.125.231.159`), Nginx를 9절의 고정
+- **2단계: EC2 blue-green 준비** — 인스턴스(`<INSTANCE_ID>`,
+  당시 t3.small)를 시작(새 IP `<OLD_PUBLIC_IP>`), Nginx를 9절의 고정
   `proxy_pass http://127.0.0.1:8080;` 방식에서 `upstream backend { server
   127.0.0.1:8081; }` 구조로 바꿔 포트 전환이 파일 통째 수정 없이 되게
   했다. 기존 jar를 `SERVER_PORT=8081` 환경변수로 재기동(하드코딩 없이) -
@@ -2369,7 +2369,7 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
 
   대응: `aws ec2 stop-instances --force`로 AWS 쪽에서(SSH 경유 아님)
   강제 종료 → 완전히 `stopped` 확인 → `modify-instance-attribute`로
-  `t3.medium`(4GB)으로 변경 → 재기동(새 IP `13.125.116.229`). Nginx
+  `t3.medium`(4GB)으로 변경 → 재기동(새 IP `<OLD_PUBLIC_IP>`). Nginx
   upstream 설정은 EBS 볼륨에 남아있어 그대로 유지됐다. t3.medium에서는
   8081+8082 JVM 2개가 동시에 떠 있어도 `free -h` 기준 `available`
   1.4~1.9GiB를 유지했고, SSH/HTTP 모두 즉시 응답했다 - 리사이즈가
