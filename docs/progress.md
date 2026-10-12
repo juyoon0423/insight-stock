@@ -78,8 +78,9 @@
 > 오늘 진행 상황: Elastic IP 적용 **완료**, 도메인+TLS 적용 **완료**
 > (프론트는 이미 재배포됨 - `next.config.ts`의 rewrite와 옛 IP 기본값도
 > 이때 같이 제거됨), 리질리언스 버그 수정(`OpenAiChatCompletionClient`
-> 재시도, `GlobalExceptionHandler` 429/502 분리) **코드 완료** → 남은 것은
-> 백엔드 재배포뿐. 인스턴스는 그때까지 켜둔다. 이 메모는 재배포가 끝나면
+> 재시도, `GlobalExceptionHandler` 429/502 분리, 채팅/임베딩 타임아웃)
+> **코드 완료** → 오늘 백엔드 코드 변경은 끝났고 남은 것은 백엔드
+> 재배포뿐. 인스턴스는 그때까지 켜둔다. 이 메모는 재배포가 끝나면
 > 지울 것.
 
 **4단계(알림) → AWS 배포(EC2+Nginx+Vercel) → 무중단 배포(ShedLock+
@@ -194,18 +195,32 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   OpenAI의 `Retry-After` 헤더 활용(실제 응답에서 확인한 적 없음), 프론트
   `ERROR_MESSAGES`에 `LLM_RATE_LIMITED` 추가(백엔드가 준 안내 문구가
   그대로 표시되므로 충분하다고 판단해 스킵).
-- **[백로그] 검색 경로의 임베딩 호출은 429 분리도 타임아웃도 아직 없음**
-  — 2026-10-12 리질리언스 수정은 `/answers`의 채팅 완성 호출
-  (`OpenAiChatCompletionClient`)만 다뤘다. 질의 임베딩을 담당하는
-  `OpenAiEmbeddingClient`는 그대로다: (1) 429 재시도를 소진하면 여전히
-  502 / `SEARCH_UNAVAILABLE`로 뭉뚱그려지고(`LLM_RATE_LIMITED` 같은 분리
-  없음), 재시도 설정도 배치용 값(3회, 2000ms 시작 = 최악 14초 대기)이라
-  사용자 대면 요청에는 길다. (2) **`RestClient` 타임아웃이 없다** -
-  `/search`는 물론 `/answers`도 답변 생성 전에 질의 임베딩을 먼저
-  호출하므로, 임베딩 API가 멈추면 채팅 쪽 타임아웃과 무관하게 화면이
-  멈출 수 있다. 시연 안정성 관점에서는 (2)가 더 급하다. 고칠 때 주의:
-  이 클라이언트는 배치 임베딩(요청당 100건)과 질의 임베딩이 같이 쓰므로
-  타임아웃/재시도 값을 배치 기준으로도 검증해야 한다.
+- **~~임베딩 호출에 타임아웃 없음~~ — 해결됨(2026-10-12, 배포는 세션
+  마지막 일괄 재배포 때)** — `OpenAiEmbeddingClient`의 `RestClient`에
+  타임아웃이 없어, 임베딩 API가 멈추면 `/search`는 물론 `/answers`(답변
+  생성 전에 질의 임베딩을 먼저 호출)도 채팅 쪽 타임아웃과 무관하게
+  화면이 멈출 수 있었다. 이 클라이언트는 성격이 다른 두 경로가 같이
+  쓰므로 read timeout을 분리했다: **단일(질의) 10초**
+  (`embedding.api.single.read-timeout-ms`, 사용자 대면) / **배치(색인,
+  100건/요청) 60초**(`embedding.api.batch.read-timeout-ms`, 백그라운드),
+  connect는 공통 5초(`embedding.api.connect-timeout-ms`). 구현은 채팅
+  클라이언트와 같은 방식이고, 경로 구분을 호출부에서 명시하도록
+  `EmbeddingClient`에 `embedQuery(String)`을 추가했다(`VectorSearchService`가
+  사용, 배치는 기존 `embed(List)` 그대로). 타임아웃은 재시도하지 않는다 -
+  단일은 502 / `SEARCH_UNAVAILABLE`, 배치는 해당 sub-batch만 실패로
+  기록되고 다음 주기에 재시도. 검증: `OpenAiEmbeddingClientTest` 5개
+  (같은 지연에 단일은 끊기고 배치는 성공하는 것으로 분리를 증명, 비용 0)
+  + 전체 `./gradlew test` 36개 통과. 단일 10초/배치 60초는 실측 분포가
+  아니라 경로 성격에 맞춰 정한 값이다 - 배치 임베딩을 다시 돌릴 때
+  요청당 실제 소요 시간을 확인해 60초가 충분한지 볼 것.
+- **[백로그] 검색 경로의 임베딩 429는 아직 502로 뭉뚱그려짐** —
+  2026-10-12 리질리언스 수정에서 429 처리는 `/answers`의 채팅 완성 호출만
+  다뤘다. `OpenAiEmbeddingClient`는 429 재시도를 소진하면 여전히 502 /
+  `SEARCH_UNAVAILABLE`로 응답하고(`LLM_RATE_LIMITED` 같은 분리 없음),
+  재시도 설정도 배치용 값(3회, 2000ms 시작 = 최악 14초 대기)이 질의
+  경로에 그대로 적용돼 사용자 대면 요청에는 길다. 이제 경로가
+  `embedQuery`/`embed`로 나뉘어 있으니 재시도 값도 경로별로 분리할 수
+  있다. 의도적으로 이번 범위에서 제외했다.
 - **Hikari `maximum-pool-size=50`이 100 VU 부하에서는 여전히 일부 대기
   발생 — 문제는 아니지만 재조정 여지 남김** — 부하테스트(k6) 옵션 C
   재검증(After)에서 성공률이 94.82%로 100%는 아니었다(80~100 VU 구간에
