@@ -23,7 +23,7 @@ public class VectorSearchService {
     }
 
     public List<VectorMatch> search(String queryText, int limit) {
-        float[] queryVector = embeddingClient.embed(List.of(queryText)).embeddings().get(0);
+        float[] queryVector = embeddingClient.embedQuery(queryText);
         String vectorLiteral = toVectorLiteral(queryVector);
 
         List<ChunkVectorMatch> rows = chunkRepository.findNearestByEmbedding(vectorLiteral, limit);
