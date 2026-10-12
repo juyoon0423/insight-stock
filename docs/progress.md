@@ -1,6 +1,6 @@
 # 진행 상황 (Progress)
 
-마지막 업데이트: 2026-08-03
+마지막 업데이트: 2026-10-12
 
 **상세 히스토리는 [docs/progress-log.md](./progress-log.md) 참고** — 각 단계를
 왜/어떻게 했는지, 실측 검증 결과, 트러블슈팅 전부 그 문서에 있다. 이 문서는
@@ -58,6 +58,12 @@
   **검증/작업이 끝나면 인스턴스를 켜둔 채로 세션을 끝내지 말고, 항상
   사용자에게 "계속 켜둘까/끌까" 먼저 확인할 것** - 이미 세 세션 연속으로
   지켜온 규칙이라 다음 세션에서도 잊지 않아야 한다.
+  **2026-10-12 세션(Elastic IP 적용) 종료 시점: 사용자 확인을 거쳐
+  인스턴스를 켜둔 채로(running, t3.small, 백엔드 8082 기동 상태) 끝냈다** -
+  "평소엔 꺼둔다"의 예외이므로, 다음 세션을 시작할 때 `describe-instances`로
+  실제 상태를 먼저 조회하고 계속 켜둘지 다시 확인할 것. 또 Elastic IP는
+  인스턴스를 꺼도 과금이 계속된다(시간당 $0.005, 월 약 $3.6 -
+  `docs/deploy.md` 12절) - 이제 "끄면 비용 0"이 아니다.
 
 ## 다음 세션 시작점
 
@@ -82,18 +88,21 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   브라우저(Playwright) 검증 완료. `notification.collector.enabled: false`
   (기본 비활성화, 다른 collector와 동일 관례) 유지 중.
 - **AWS 배포(1차)도 완전히 끝났고 다시 조사할 필요 없음**: EC2
-  `i-00bdd2e8b984f5d0f`(현재 t3.small, stopped — blue-green 검증 종료 후
-  2026-07-31 세션에서 되돌려놓은 상태)에 docker-compose(Postgres+
+  `i-00bdd2e8b984f5d0f`(t3.small, 2026-10-12 세션 종료 시점 기준 running -
+  사용자 확인 후 켜둠, Elastic IP 연결됨)에 docker-compose(Postgres+
   Elasticsearch)+jar 직접 실행, Nginx가 80→(현재 라이브 포트) 리버스 프록시
   (14절 upstream 구조로 전환됨, 8080/8081/8082 직접 접근은 보안 그룹에서
   막혀 있어 외부 비공개), Vercel `https://frontend-steel-omega-
   0zye89ut4w.vercel.app`에 프론트 배포, Next.js rewrite로 Vercel 서버가
   백엔드를 대신 호출하는 프록시(Mixed Content 우회) 적용. 상세 절차/근거는
-  [docs/deploy.md](./deploy.md) 전체와 progress-log.md 8~9절 참고. **인스턴스는
-  기본적으로 꺼져 있다** - 다시 켜서 검증하려면 `docs/deploy.md` 7절(재기동)
-  → `BACKEND_ORIGIN`/Vercel 재배포(12절) 순서 그대로 따를 것. 재기동 시
-  라이브 포트가 8080이 아닐 수 있으니(14절 주의사항) nginx 설정을 먼저
-  확인할 것.
+  [docs/deploy.md](./deploy.md) 전체와 progress-log.md 8~9절 참고.
+  **Elastic IP 적용(2026-10-12)으로 퍼블릭 IP가 고정됐다** - 인스턴스를
+  껐다 켜도 IP가 그대로라 `BACKEND_ORIGIN` 갱신/Vercel 재배포는 더 이상
+  필요 없다(12절, stop→start 실측으로 확인). 꺼져 있는 인스턴스를 다시
+  켤 때는 `docs/deploy.md` 7절(재기동)만 따르면 된다. 두 가지 주의:
+  라이브 포트가 8080이 아니니(14절, 현재 8082) nginx 설정을 먼저 확인할
+  것, 그리고 **Elasticsearch가 healthy가 된 뒤에 jar를 띄울 것**(너무
+  일찍 띄우면 기동 실패 후 502만 나온다 - 7절 주의 1, 2026-10-12 실측).
 - **무중단 배포(ShedLock + Blue-Green)도 수동 절차 기준으로 완전히 끝났고
   다시 설계할 필요 없음**: `docs/deploy.md` 13~17절 + progress-log.md 10절에
   ShedLock 도입 근거, Nginx upstream 구조, 정확한 전환 명령어 순서, 실측
@@ -181,8 +190,9 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
 - **CD(자동 배포)는 EC2 상시 운영 여부가 정해지면 재검토** — 이번 CI
   세션에서 CD를 의도적으로 범위 밖에 뒀다(EC2를 평소 꺼두는 운영 방침과
   "push마다 자동 배포"가 안 맞음). 만약 나중에 EC2를 상시 켜두는 쪽으로
-  운영 방침이 바뀌거나 Elastic IP/도메인·TLS가 갖춰지면, 그때 CD 도입을
-  다시 논의할 것.
+  운영 방침이 바뀌거나 도메인·TLS가 갖춰지면, 그때 CD 도입을 다시 논의할
+  것(Elastic IP는 2026-10-12에 적용 완료 - 배포 대상 주소가 고정됐으므로
+  CD의 전제 조건 하나는 충족됨).
 - **청킹/임베딩/corpCode 동기화 스케줄러를 나중에 활성화할 때 `@SchedulerLock`
   추가를 빠뜨리지 말 것** — 무중단 배포 도입(2026-07-31)으로 공시 수집/원문
   수집/색인/알림 감지 4개 스케줄러에는 ShedLock을 적용했지만, 현재
@@ -231,14 +241,21 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   중지 후 재기동할 때마다 SSH로 접속해 수동으로 다시 실행해야 한다(실제로
   세 세션 모두 재기동할 때마다 반복함, progress-log.md 9절/10절). systemd
   서비스로 등록하거나 Docker 이미지화하면 해결됨 - 우선순위는 관측성 이후.
-- **Elastic IP 미사용 — 켤 때마다 IP가 바뀌어 Vercel도 매번 재배포해야
-  함** — 인스턴스를 stop→start할 때마다 퍼블릭 IP가 새로 할당돼(현재
-  `43.201.85.100` → `3.36.124.56`으로 이미 한 번 바뀜), Vercel의
-  `BACKEND_ORIGIN` 환경변수를 갱신하고 `vercel --prod`로 재배포해야만
-  프론트-백엔드 연동이 유지된다(docs/deploy.md 12절). Elastic IP를 붙이면
-  이 갱신 자체가 사라지지만 월 비용이 붙는다(인스턴스가 실행 중이 아닐 때
-  Elastic IP는 과금됨) - 평소 꺼두는 운영 방침과 상충하는 면이 있어
-  비용 대비 효과를 판단해야 함, 아직 결론 안 남.
+- **~~Elastic IP 미사용 — 켤 때마다 IP가 바뀌어 Vercel도 매번 재배포해야
+  함~~ — 해결됨(2026-10-12)** — Elastic IP를 할당해 인스턴스에 연결했고,
+  Vercel의 `BACKEND_ORIGIN`을 그 IP로 한 번 갱신·재배포했다. 실제로
+  stop→start를 해서 IP가 그대로인 것, 그리고 Vercel을 건드리지 않고도
+  프론트→백엔드 호출이 다시 정상 동작하는 것까지 실측으로 확인했다(절차와
+  검증 결과는 docs/deploy.md 12절). IP 값은 문서에 적지 않기로 했다 -
+  `describe-addresses`에 Name 태그 `insightstock-eip`로 조회한다.
+  **남은 트레이드오프(비용)**: 2024-02 이후 AWS는 모든 퍼블릭 IPv4에
+  시간당 $0.005를 과금하므로 Elastic IP는 인스턴스를 꺼둔 동안에도 요금이
+  나간다(월 약 $3.6). 이전에는 꺼두면 IP 비용이 0이었으니 평소 꺼두는
+  운영 방침과 상충하지만, 재기동마다 반복하던 수작업이 사라지는 값으로
+  받아들였다. 장기간 안 쓸 거면 12절의 해제 절차로 되돌릴 수 있다.
+  **후속 정리 후보**: `frontend/next.config.ts`의 `BACKEND_ORIGIN` 기본값
+  (fallback)에 옛 임시 IP가 그대로 남아 있다 - Vercel 환경변수가 우선하므로
+  동작에는 영향 없지만 죽은 주소라 정리할지 결정 필요.
 - **도메인/TLS 미적용 — 시연 직전 진행 예정** — 현재 백엔드는 HTTP(IP
   기반)만 서비스한다. 도메인을 구매하고 Let's Encrypt로 TLS를 붙이는
   작업은 의도적으로 미뤄뒀다(지금 사도 시연 전까지 미리 켜둘 필요는 없고,

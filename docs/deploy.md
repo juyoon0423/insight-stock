@@ -88,8 +88,8 @@ aws ec2 run-instances --region ap-northeast-2 \
 aws ec2 wait instance-running --region ap-northeast-2 --instance-ids <INSTANCE_ID>
 ```
 
-퍼블릭 IP 조회 (재시작할 때마다 바뀔 수 있음 — Elastic IP를 안 붙였기 때문. 시연 때 고정 IP가
-필요하면 이 단계에서 Elastic IP 할당을 추가로 고려):
+퍼블릭 IP 조회 (2026-10-12부터 Elastic IP가 연결되어 있어 재시작해도 바뀌지 않는다 — 12절 참고.
+인스턴스를 새로 만드는 경우에는 12절의 할당/연결 절차를 이 단계 뒤에 수행):
 
 ```bash
 aws ec2 describe-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID> \
@@ -179,7 +179,8 @@ curl -X POST http://<PUBLIC_IP>:8080/api/v1/auth/login \
 
 ## 6. 끌 때 (평소 운영)
 
-인스턴스를 끄면 이번에 붙은 퍼블릭 IP는 반환된다(Elastic IP 미사용). 다시 켤 때는 3단계
+인스턴스를 꺼도 퍼블릭 IP는 그대로 유지된다(Elastic IP 적용, 12절 — 단 꺼둔 동안에도
+Elastic IP 요금은 계속 나간다). 다시 켤 때는 3단계
 헬스체크부터 다시 하면 되고, 리소스(보안 그룹, 인스턴스 자체, jar, docker-compose 설정)는
 그대로 남아있으니 1~2단계(보안 그룹/인스턴스 생성)를 반복할 필요는 없다.
 
@@ -194,20 +195,41 @@ aws ec2 stop-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID>
 aws ec2 start-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID>
 aws ec2 wait instance-running --region ap-northeast-2 --instance-ids <INSTANCE_ID>
 
-# 퍼블릭 IP가 바뀌었으므로 다시 조회
+# 퍼블릭 IP는 Elastic IP라 그대로다(12절) - 확인만 한다
 aws ec2 describe-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID> \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
 
-# SSH 접속 후 docker compose가 자동 기동되지 않으므로 다시 올려준다
-ssh -i "<PEM_PATH>" ec2-user@<새 PUBLIC_IP> "cd ~/insight-stock && docker compose up -d"
+# 컨테이너 상태 확인 (2026-10-12 실측: 재기동 시 컨테이너는 자동으로 다시 떴다.
+# 안 떠 있으면 up -d로 올린다 - 이미 떠 있어도 실행해서 해가 없다)
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "cd ~/insight-stock && docker compose up -d"
 
-# 백엔드도 다시 실행 (재부팅 시 프로세스가 사라지므로)
-ssh -i "<PEM_PATH>" ec2-user@<새 PUBLIC_IP> \
-  "cd ~/insight-stock && nohup java -jar app.jar > app.log 2>&1 < /dev/null & disown"
+# 중요: 둘 다 healthy가 된 뒤에 백엔드를 띄운다 (아래 주의 참고)
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
+  "docker inspect --format='{{.State.Health.Status}}' insight-stock-postgres insight-stock-elasticsearch"
+
+# 백엔드도 다시 실행 (재부팅 시 프로세스가 사라지므로).
+# 포트는 nginx upstream이 가리키는 값으로 맞춘다 (14절) - 2026-10-12 기준 8082
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
+  "cd ~/insight-stock && (SERVER_PORT=8082 nohup java -jar app.jar > app.log 2>&1 < /dev/null &)"
 ```
+
+> **주의 1 — Elasticsearch가 healthy가 되기 전에 jar를 띄우면 기동에 실패한다** (2026-10-12
+> 실측). 재기동 직후 SSH가 되자마자 바로 jar를 띄웠더니 `chunkDocumentRepository` 초기화가
+> `ConnectionClosedException: Connection is closed`로 실패하면서 애플리케이션이 종료됐고,
+> 외부 헬스체크는 2분 넘게 502만 반환했다. 컨테이너가 `Running`으로 보여도 ES가 요청을
+> 받을 준비가 된 것은 아니다 — 반드시 `healthy`를 확인한 뒤 띄울 것. 502가 계속되면
+> `ps aux | grep '[j]ava -jar'`와 `app.log`의 `Application run failed`부터 확인한다.
+>
+> **주의 2 — 기동 명령은 괄호(서브셸)로 감싼다.** 기존의 `"cd ... && nohup java ... & disown"`
+> 형태는 같은 날 실측에서 로컬 SSH 세션이 반환되지 않고 걸렸다(원격 프로세스 자체는 정상
+> 기동됨). `( ... &)` 형태는 즉시 반환됐다.
 
 > 참고: SSH 보안 그룹 규칙이 "내 IP"로 고정되어 있으므로, 새 위치(카페, 다른 네트워크 등)에서
 > 접속하려면 1단계의 "내 IP가 바뀌면" 절차대로 규칙을 갱신해야 한다.
+
+> **아래 목록은 Elastic IP 적용(2026-10-12, 12절) 이후로는 평소에 해당하지 않는다** — IP가
+> 고정이라 재기동해도 프론트엔드를 건드릴 필요가 없다. Elastic IP를 해제하거나 인스턴스를
+> 새로 만들어 IP가 실제로 바뀌는 경우에만 참고할 것.
 
 **퍼블릭 IP가 바뀔 때마다 프론트엔드도 반드시 갱신해야 한다:**
 
@@ -227,6 +249,12 @@ ssh -i "<PEM_PATH>" ec2-user@<새 PUBLIC_IP> \
 aws ec2 terminate-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID>
 aws ec2 wait instance-terminated --region ap-northeast-2 --instance-ids <INSTANCE_ID>
 aws ec2 delete-security-group --region ap-northeast-2 --group-id <SG_ID>
+
+# Elastic IP도 반드시 해제한다 - 인스턴스를 종료해도 Elastic IP는 자동으로 사라지지 않고,
+# 해제하기 전까지 계속 과금된다 (12절)
+aws ec2 describe-addresses --region ap-northeast-2 \
+  --filters Name=tag:Name,Values=insightstock-eip --query 'Addresses[0].AllocationId' --output text
+aws ec2 release-address --region ap-northeast-2 --allocation-id <ALLOCATION_ID>
 ```
 
 ## 9. Nginx 리버스 프록시 (2026-07-28 적용)
@@ -338,8 +366,8 @@ Vercel 환경변수:
   결과적으로 같은 origin(`/api/v1/...`)으로 요청이 나가고 위 rewrite가 이걸 가로채
   EC2로 프록시한다.
 - `BACKEND_ORIGIN` (일반 환경변수, `NEXT_PUBLIC_` 아님 — 클라이언트 번들에 노출되지
-  않고 Vercel 서버에서만 쓰임) = 현재 EC2 IP. **EC2 IP가 바뀔 때마다 이 값을 갱신하고
-  재배포해야 한다** (11절 참고).
+  않고 Vercel 서버에서만 쓰임) = EC2의 Elastic IP. 2026-10-12부터 IP가 고정이라 평소에는
+  갱신할 일이 없다 — IP가 실제로 바뀌는 예외 상황에서만 갱신 후 재배포한다(12절 참고).
 
 ```bash
 npx vercel env rm NEXT_PUBLIC_API_BASE_URL production --yes
@@ -368,12 +396,107 @@ CORS 프리플라이트 자체가 발생하지 않아 이 값이 실제로 검�
 다만 향후 프론트가 백엔드를 직접(도메인+TLS로) 호출하는 방식으로 되돌아갈 경우를 대비해
 값은 계속 맞춰둔다.
 
-## 12. IP가 바뀔 때마다 갱신해야 하는 값 (요약)
+## 12. Elastic IP — 고정 IP 적용 (2026-10-12 적용)
 
-인스턴스를 껐다 켤 때마다 퍼블릭 IP가 바뀐다(Elastic IP 미사용). 그때마다:
+**Elastic IP 적용 이후로는 IP가 고정되므로, 인스턴스를 껐다 켤 때마다 Vercel의
+`BACKEND_ORIGIN`을 갱신하고 재배포하던 절차는 더 이상 필요 없다.**
 
-1. `frontend/next.config.ts`의 `BACKEND_ORIGIN` 기본값 또는 Vercel의 `BACKEND_ORIGIN`
-   환경변수를 새 IP로 갱신 → `npx vercel --prod`로 재배포
+### 왜 적용했나
+
+Elastic IP가 없으면 인스턴스를 stop → start할 때마다 AWS가 퍼블릭 IP를 새로 배정한다.
+실제로 재기동할 때마다 IP가 매번 달라졌고(2026-10-12에도 기동하자마자 또 새 IP가 붙었다),
+그때마다 Vercel 환경변수 갱신 + `vercel --prod` 재배포가 필요했다. Elastic IP는 계정에
+할당된 고정 주소라 인스턴스 상태와 무관하게 같은 값이 유지된다.
+
+### 적용 절차 (실제로 실행한 순서)
+
+```bash
+# 1. Elastic IP는 running 인스턴스에 연결하므로 먼저 기동
+aws ec2 start-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID>
+aws ec2 wait instance-running --region ap-northeast-2 --instance-ids <INSTANCE_ID>
+
+# 2. 할당 (Name 태그를 붙여 나중에 찾기 쉽게 한다)
+aws ec2 allocate-address --region ap-northeast-2 --domain vpc \
+  --tag-specifications 'ResourceType=elastic-ip,Tags=[{Key=Name,Value=insightstock-eip}]'
+# → AllocationId, PublicIp 기록
+
+# 3. 인스턴스에 연결
+aws ec2 associate-address --region ap-northeast-2 \
+  --instance-id <INSTANCE_ID> --allocation-id <ALLOCATION_ID>
+
+# 4. 연결 확인 - InstanceId와 PublicIp가 기대값과 일치하는지
+aws ec2 describe-addresses --region ap-northeast-2 --allocation-ids <ALLOCATION_ID>
+
+# 5. Vercel의 BACKEND_ORIGIN을 Elastic IP로 교체하고 재배포 (이번이 마지막 갱신)
+cd frontend
+npx vercel env rm BACKEND_ORIGIN production --yes
+printf 'http://<ELASTIC_IP>' | npx vercel env add BACKEND_ORIGIN production
+npx vercel --prod --yes
+```
+
+현재 Elastic IP 값은 문서에 적지 않는다. 필요하면 아래로 조회한다:
+
+```bash
+aws ec2 describe-addresses --region ap-northeast-2 \
+  --filters Name=tag:Name,Values=insightstock-eip \
+  --query 'Addresses[0].[PublicIp,AllocationId,InstanceId]' --output text
+```
+
+### 검증 결과 (2026-10-12, 실측)
+
+- 연결 직후 `describe-addresses`의 `InstanceId`가 대상 인스턴스와 일치, 인스턴스의
+  `PublicIpAddress`도 기동 시 받았던 임시 IP에서 Elastic IP로 바뀜.
+- `curl http://<ELASTIC_IP>/actuator/health` → `{"status":"UP"}` (80번, Nginx 경유).
+- Vercel 프로덕션 URL의 `/api/v1/auth/login`(잘못된 계정)이 백엔드의 에러 JSON
+  (`401`, `INVALID_CREDENTIALS`)을 반환했고, 같은 시각 EC2 Nginx access log에 Vercel 서버
+  IP에서 온 동일 요청이 기록됨 — Vercel → Elastic IP → Nginx → 백엔드 경로가 끝까지 확인됨.
+- **stop → start 후에도 IP 동일**: 정지 전 / `stopped` 상태 / 재기동 후 세 시점의
+  `PublicIpAddress`가 전부 같은 값이었고, `stopped` 상태에서도 연결(`AssociationId`)이
+  유지됐다.
+- **재기동 후 Vercel을 전혀 건드리지 않고**(환경변수 갱신·재배포 없음) 같은 Vercel URL
+  호출이 다시 정상 응답함 — 이것이 Elastic IP를 적용한 목적 그 자체다.
+- 보안 그룹은 변경하지 않았다: 22(내 IP)/80/443만 열려 있고 5432/9200은 외부에서 닫힌 상태
+  그대로임을 작업 전후로 확인.
+
+### 비용과 트레이드오프
+
+AWS는 2024-02-01부터 **모든 퍼블릭 IPv4 주소에 시간당 $0.005를 과금**한다. Elastic IP는
+인스턴스가 running이든 stopped든, 심지어 어디에도 연결돼 있지 않아도 **보유하는 동안 계속**
+부과된다 — 한 달 내내 보유하면 약 $3.65(730시간 × $0.005).
+
+("running 인스턴스에 연결된 Elastic IP는 무료"라는 설명은 2024-02 이전 정책이다. 지금은
+해당하지 않는다.)
+
+적용 전후 비교:
+
+| 인스턴스 상태 | Elastic IP 없음 (이전) | Elastic IP 있음 (현재) |
+|---|---|---|
+| running | 임시 퍼블릭 IP에 $0.005/시간 | Elastic IP에 $0.005/시간 (동일) |
+| stopped | 퍼블릭 IP가 반환되어 **$0** | Elastic IP에 **$0.005/시간** |
+
+즉 켜져 있는 동안은 차이가 없고, **꺼둔 시간만큼이 순수하게 늘어난 비용**이다. 이 프로젝트는
+"평소엔 인스턴스를 꺼둔다"가 운영 방침이라 대부분의 시간이 `stopped`이고, 따라서 이 비용의
+거의 전부(월 약 $3.6)가 새로 생긴 고정 지출이다. 비용 절감을 위해 꺼두는 방침과 정면으로
+상충하는 지점이다.
+
+그럼에도 적용한 이유: 켤 때마다 반복하던 "IP 조회 → Vercel 환경변수 교체 → 재배포 → 재검증"
+수작업이 사라지고, 시연(2026-11) 당일 이 단계에서 실수할 여지가 없어진다. 월 $3.6 수준이면
+그 값어치가 있다고 판단했다.
+
+되돌리고 싶을 때(장기간 안 쓸 때):
+
+```bash
+aws ec2 disassociate-address --region ap-northeast-2 --association-id <ASSOCIATION_ID>
+aws ec2 release-address --region ap-northeast-2 --allocation-id <ALLOCATION_ID>
+```
+
+해제하면 같은 IP를 다시 받을 수 없고, 이후로는 아래 "IP가 실제로 바뀌는 경우" 절차가 다시
+필요해진다. 요금은 변동될 수 있으니 실제 청구액은 AWS Billing에서 확인할 것.
+
+### IP가 실제로 바뀌는 경우에만 (Elastic IP 해제, 인스턴스 재생성 등)
+
+1. Vercel의 `BACKEND_ORIGIN` 환경변수를 새 IP로 갱신 → `npx vercel --prod`로 재배포
+   (`frontend/next.config.ts`의 기본값은 환경변수가 없을 때만 쓰이는 fallback이다)
 2. EC2 쪽 `.env`의 `CORS_ALLOWED_ORIGINS`는 프론트엔드 주소가 바뀌지 않는 한 그대로 둬도 됨
    (Vercel 프로덕션 URL은 고정 alias라 IP가 바뀌어도 안 변함)
 3. 로컬 개발용 `frontend/.env.local`의 `NEXT_PUBLIC_API_BASE_URL`은 이 배포 절차와 무관
@@ -525,11 +648,13 @@ t3.small엔 스왑도 없어서(`Swap: 0B`) 극심한 메모리 압박이 sshd �
 
 ## 알려진 제약 / 다음 단계 후보
 
-- 퍼블릭 IP가 껐다 켤 때마다 바뀐다 — Vercel의 `BACKEND_ORIGIN` 환경변수를 매번 갱신하고
-  재배포해야 한다(12절). Elastic IP를 붙이면 이 갱신 자체가 없어진다 — 비용 대비 효과를
-  판단해 다음 단계에서 고려.
+- ~~퍼블릭 IP가 껐다 켤 때마다 바뀐다~~ — **해결됨(2026-10-12, Elastic IP 적용, 12절).**
+  stop → start 후에도 IP가 유지되고 Vercel 재배포 없이 연동이 유지됨을 실측으로 확인했다.
+  대신 인스턴스를 꺼둔 시간에도 Elastic IP 요금(시간당 $0.005, 월 약 $3.6)이 나가는
+  트레이드오프가 생겼다.
 - 백엔드가 jar 직접 실행 방식이라 EC2 재부팅 시 자동 기동되지 않는다 — systemd 서비스 등록
-  또는 Docker 이미지화가 다음 단계 후보.
+  또는 Docker 이미지화가 다음 단계 후보. 수동으로 띄울 때는 Elasticsearch가 healthy가 된
+  뒤에 띄워야 한다(7절 주의 1) — systemd로 옮길 때도 이 기동 순서 의존성을 반영할 것.
 - Vercel rewrite 프록시는 임시 우회다 — 시연 직전 도메인 구매 + Let's Encrypt로 백엔드에
   진짜 TLS를 붙이면 제거하고 직접 호출로 되돌린다(10절 참고).
 - **무중단 배포(Blue-Green) — 수동 절차는 검증 완료(13~17절), 자동화는 다음 단계.**
