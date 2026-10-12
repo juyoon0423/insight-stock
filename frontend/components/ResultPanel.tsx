@@ -74,7 +74,8 @@ export default function ResultPanel({ status, data, errorMessage, onRetry }: Res
             </p>
           </div>
         )}
-        <AnswerText answer={data.answer} sourceCount={data.sources.length} />
+        {/* citedNumbers가 없는 구버전 백엔드 응답이면 빈 배열로 - 배지 없이 본문만 보인다 */}
+        <AnswerText answer={data.answer} citedNumbers={data.citedNumbers ?? []} />
       </div>
 
       {hasSources && (

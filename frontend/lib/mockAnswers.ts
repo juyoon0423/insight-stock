@@ -11,6 +11,7 @@ import type { AnswerResponse } from "./types";
 const NOT_FOUND: Omit<AnswerResponse, "query"> = {
   answer: "제공된 공시 자료에서는 이 질문에 답할 수 있는 내용을 찾지 못했습니다.",
   sources: [],
+  citedNumbers: [],
 };
 
 // 2026-07-23 실 API 호출로 검증된 응답 형태를 그대로 반영(입력 4,837토큰/출력
@@ -34,6 +35,7 @@ const KIS_ELS: Omit<AnswerResponse, "query"> = {
       dartUrl: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260721000104",
     },
   ],
+  citedNumbers: [1, 2],
 };
 
 // 2026-07-23 실 API 호출로 검증(입력 4,399토큰/출력 232토큰, $0.000799). 실제
@@ -58,6 +60,7 @@ const PARATAXIS_MERGER: Omit<AnswerResponse, "query"> = {
       dartUrl: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260720000352",
     },
   ],
+  citedNumbers: [1, 2],
 };
 
 // 예시 칩 질문에만 매칭 - 국내 DART 공시 범위 밖 질문(테슬라 등)은 항상 NOT_FOUND.

@@ -2,11 +2,11 @@ import { splitAnswerByCitations } from "@/lib/citations";
 
 interface AnswerTextProps {
   answer: string;
-  sourceCount: number;
+  citedNumbers: number[];
 }
 
-export default function AnswerText({ answer, sourceCount }: AnswerTextProps) {
-  const segments = splitAnswerByCitations(answer, sourceCount);
+export default function AnswerText({ answer, citedNumbers }: AnswerTextProps) {
+  const segments = splitAnswerByCitations(answer, citedNumbers);
 
   return (
     <p className="whitespace-pre-wrap text-base leading-relaxed text-zinc-800 dark:text-zinc-200">

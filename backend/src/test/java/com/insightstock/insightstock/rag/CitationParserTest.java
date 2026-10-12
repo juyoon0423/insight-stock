@@ -34,4 +34,11 @@ class CitationParserTest {
     void 빈_문자열이면_빈_리스트를_반환한다() {
         assertThat(citationParser.extractCitedNumbers("")).isEqualTo(List.of());
     }
+
+    @Test
+    void int_범위를_넘는_긴_숫자는_인용으로_보지_않고_예외도_던지지_않는다() {
+        String answer = "접수번호 [20260724800076] 공시에 따르면 배당이 결정됐습니다[1].";
+
+        assertThat(citationParser.extractCitedNumbers(answer)).containsExactly(1);
+    }
 }

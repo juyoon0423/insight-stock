@@ -12,7 +12,10 @@ import org.springframework.stereotype.Component;
 @Component
 public class CitationParser {
 
-    private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(\\d+)]");
+    // 자릿수를 9자리로 제한한다 - 제한이 없으면 "[99999999999]" 같은 텍스트에서
+    // Integer.parseInt가 NumberFormatException을 던져 답변 전체가 500이 된다. 9자리까지는
+    // int 범위 안이고, 실제 인용 번호(최대 50)에는 한참 여유가 있다.
+    private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(\\d{1,9})]");
 
     // 답변에 처음 등장한 순서대로, 중복 없이 인용 번호를 반환한다.
     public List<Integer> extractCitedNumbers(String answerText) {

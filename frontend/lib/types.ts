@@ -17,6 +17,9 @@ export interface AnswerResponse {
   query: string;
   answer: string;
   sources: SourceRef[];
+  // 본문의 [N] 중 백엔드가 출처로 인정한 번호(등장 순서). sources와 길이·순서가 같아
+  // citedNumbers[i]번 인용이 sources[i]를 가리킨다.
+  citedNumbers: number[];
 }
 
 export interface SearchResultItem {
