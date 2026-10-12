@@ -1013,6 +1013,141 @@ chunks 173,035 / 임베딩 NULL 0건 / ES 173,035건, `/search` 200(3.1초, 10�
   4.9MB)를 `pg_restore --clean`으로 되돌린다. 같은 폴더의 `restore.sh`/`restore.log`는 이번에
   실제로 실행한 스크립트와 그 출력이다.
 
+## 20. 레이트 리밋 — Nginx `limit_req` (2026-10-12 작성, **EC2에는 아직 미적용**)
+
+`/api/v1/answers`와 `/api/v1/search`는 로그인 없이 열려 있다(포트폴리오 핵심 기능이라 의도적으로
+공개 - `SecurityConfig`). 그런데 요청 횟수 제한이 어디에도 없어서, 누군가 반복 호출하면 OpenAI
+TPM 한도(부하테스트에서 5 VU로도 닿았다 - `docs/loadtest.md`)가 소진돼 다른 사용자까지 전부
+429를 받는다. 라이브 시연 중에 이 일이 생기면 대응할 방법이 없으므로 Nginx 단에서 IP별로 막는다.
+
+**왜 앱(Spring)이 아니라 Nginx인가**: 막힌 요청이 JVM까지 오지 않아 스레드/커넥션을 쓰지 않고,
+새 라이브러리(Bucket4j 등)나 코드 변경이 필요 없다. 단일 인스턴스라 분산 카운터도 필요 없다.
+로그인 사용자 단위 제한은 못 하지만, 대상 API가 애초에 비로그인 공개라 IP 단위가 맞다.
+
+**요청 "크기" 제한은 앱이 맡는다**(같은 날 적용): `/answers`의 `query` 500자 / `topK` 20 이하,
+`/search`의 `q` 500자 이하. 횟수(Nginx) × 크기(앱) 두 축으로 TPM 소진을 막는 구조다.
+
+### 설정
+
+`/etc/nginx/conf.d/insightstock-backend.conf`를 아래처럼 고친다. 9절의 certbot이 관리하는 줄
+(`listen 443 ssl`, `ssl_certificate` 등)과 80번 리다이렉트 server 블록은 건드리지 않는다.
+
+**(1) 파일 맨 위, `upstream backend` 앞에 추가** (`limit_req_zone`은 server 블록 밖에 있어야 한다):
+
+```nginx
+# CORS 프리플라이트(OPTIONS)는 세지 않는다 - 키가 빈 문자열이면 limit_req가 그 요청을 건너뛴다.
+# 프리플라이트까지 세면 브라우저의 POST 1번이 2번으로 계산된다.
+map $request_method $ratelimit_key {
+    OPTIONS "";
+    default $binary_remote_addr;
+}
+limit_req_zone $ratelimit_key zone=answers_per_ip:10m rate=20r/m;
+limit_req_zone $ratelimit_key zone=search_per_ip:10m rate=60r/m;
+limit_req_status 429;    # 기본값은 503 - 앱의 rate limit 응답(429)과 맞춘다
+```
+
+**(2) 443 server 블록 안을 다음과 같이 고친다** (`proxy_set_header` 4줄을 `location /` 안에서
+server 블록 바로 아래로 올린다 - 새 location 두 개가 같은 헤더를 물려받게 하기 위함):
+
+```nginx
+server {
+    server_name insightstock.site;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    location / {
+        proxy_pass http://backend;
+    }
+
+    location = /api/v1/answers {
+        limit_req zone=answers_per_ip burst=10 nodelay;
+        proxy_pass http://backend;
+    }
+
+    location = /api/v1/search {
+        limit_req zone=search_per_ip burst=20 nodelay;
+        proxy_pass http://backend;
+    }
+
+    # Nginx가 직접 거절할 때도 앱과 같은 형식(ProblemDetail + errorCode)으로 응답한다.
+    # CORS 헤더가 없으면 브라우저가 응답을 읽지 못해 프론트에는 "서버에 연결할 수 없습니다"로만
+    # 보인다 - 값은 EC2 .env의 CORS_ALLOWED_ORIGINS와 같은 프론트 주소로 넣는다.
+    error_page 429 @rate_limited;
+    location @rate_limited {
+        default_type application/problem+json;
+        add_header Access-Control-Allow-Origin "https://<Vercel 프로덕션 URL>" always;
+        add_header Retry-After 5 always;
+        return 429 '{"type":"about:blank","title":"Too Many Requests","status":429,"detail":"요청이 너무 많습니다. 잠시 후 다시 시도해주세요.","errorCode":"RATE_LIMITED"}';
+    }
+
+    # ... 이하 certbot이 관리하는 listen 443 ssl / ssl_certificate 줄은 그대로
+}
+```
+
+### 값의 근거
+
+| 경로 | 지속 속도 | burst | 의미 |
+|---|---|---|---|
+| `/api/v1/answers` | 분당 20회 (3초에 1회) | 10 | 한 IP가 연달아 11번까지는 즉시 통과, 이후 3초에 1번 |
+| `/api/v1/search` | 분당 60회 (1초에 1회) | 20 | 연달아 21번까지 즉시 통과, 이후 1초에 1번 |
+
+- `/answers` 분당 20회: 기본 topK(10)에서 요청 1건이 약 4,400~4,800토큰(실측,
+  dart-findings.md 2-10)이라 한 IP가 한도를 꽉 채워도 분당 약 10만 토큰 - TPM 한도 200,000의
+  절반이다. 한 사람이 화면에서 질문하는 속도(답변 1건에 2~3초 + 읽는 시간)로는 닿지 않는다.
+- `/search`는 LLM을 거치지 않아 TPM과 무관하고(질의 임베딩 수십 토큰뿐) 보호 대상은 DB
+  커넥션/스레드다. 그래서 더 느슨하게 잡았다.
+- `nodelay`: burst 범위의 요청을 줄 세워 늦추지 않고 즉시 처리한다. 사용자가 기다리는 요청이라
+  "느려짐"보다 "초과분은 바로 429"가 낫다.
+- **값 자체는 실사용 트래픽 실측이 아니라 TPM 한도에서 역산한 값이다.**
+
+**알아둘 한계 — 같은 공유기/학교 네트워크의 사용자는 IP 하나로 묶인다.** 발표장에서 청중
+여럿이 같은 Wi-Fi로 동시에 써보면 합쳐서 분당 20회에 걸릴 수 있다. 그런 시연을 계획한다면
+발표 전에 `rate`/`burst`를 올리고 reload하면 된다(아래).
+
+### 적용 방법
+
+Nginx 설정은 EC2의 `/etc/nginx`에 있고 **백엔드 jar와 무관하다.** 따라서:
+
+- **jar를 재배포(18절)해도 자동으로 반영되지 않는다** - 최초 1회 SSH로 직접 고쳐야 한다.
+- 반대로 한 번 적용하면 jar 재배포, 인스턴스 재시작, blue-green 전환(15절 - `upstream` 안의
+  포트만 바꾼다), 인증서 갱신으로는 사라지지 않는다.
+- 설정을 고친 뒤에는 **수동으로 reload해야 반영된다**:
+
+```bash
+# 고치기 전에 백업
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
+  "sudo cp /etc/nginx/conf.d/insightstock-backend.conf /etc/nginx/insightstock-backend.conf.pre-ratelimit"
+
+# (파일 수정 후) 문법 검증이 통과할 때만 reload - 재시작이 아니라 reload라 무중단이다(16절)
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "sudo nginx -t && sudo nginx -s reload"
+```
+
+적용 후 확인(같은 IP에서 연달아 호출 - 12번째부터 429가 나와야 한다):
+
+```bash
+for i in $(seq 1 15); do
+  curl -s -o /dev/null -w "%{http_code} " -X POST https://insightstock.site/api/v1/answers \
+    -H "Content-Type: application/json" -d '{"query":""}'
+done; echo
+# 기대: 400이 11번(빈 질문이라 LLM 호출 없이 검증에서 거절 - 비용 0) 이후 429
+```
+
+되돌리기: 백업 파일을 다시 복사하고 `sudo nginx -t && sudo nginx -s reload`.
+
+### 검증 상태
+
+- **로컬 검증 완료(2026-10-12)**: 위 설정을 `nginx:alpine` 컨테이너에 그대로 넣고(TLS 줄만 제외,
+  가짜 백엔드 연결) 실제 요청으로 확인했다. `nginx -t` 통과 / `/answers` 연속 15회 → 200 11번 뒤
+  429 / `/search` 연속 25회 → 200 21번 뒤 429 / 429 응답은 `application/problem+json` +
+  `errorCode: RATE_LIMITED` + CORS 헤더 / 제한 중에도 `OPTIONS`는 전부 통과 / 다른 경로는 영향
+  없음 / 백엔드가 직접 준 429(`LLM_RATE_LIMITED` 등)는 본문 그대로 통과 / 몇 초 뒤 다시 200.
+- **EC2에는 아직 적용하지 않았다** - 인스턴스가 정지 상태였다. 다음에 켤 때 위 "적용 방법"대로
+  적용하고, certbot이 고쳐둔 실제 파일과 합쳐졌을 때도 `nginx -t`가 통과하는지 확인할 것.
+
 ## 알려진 제약 / 다음 단계 후보
 
 - **t3.small은 데이터 이전(19절) 이후 검색을 감당하지 못한다** — 첫 검색 직후 인스턴스가

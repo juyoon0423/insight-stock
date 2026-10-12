@@ -269,6 +269,20 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   `embedQuery`/`embed`로 나뉘어 있으니 값도 경로별로 분리할 수 있다.
   프론트 `ERROR_MESSAGES`에는 `SEARCH_RATE_LIMITED`를 추가하지 않았다
   (`LLM_RATE_LIMITED`와 같은 이유 - 백엔드 안내 문구가 그대로 표시됨).
+- **공개 API 보호(입력 상한 + 레이트 리밋) — 앱 쪽은 적용됨, Nginx 설정은
+  EC2에 아직 미적용(2026-10-12)** — `/answers`·`/search`가 로그인 없이 열려
+  있는데 요청 크기/횟수 제한이 없던 문제. (1) **입력 상한(코드, 배포는 아직)**:
+  `/answers`의 `query` 500자, `topK` 상한 50 → 20, `/search`의 `q` 500자
+  (`/search`의 `topK` 50은 유지 - LLM을 안 거치고 검색 화면이 20을 쓴다).
+  회원가입 비밀번호는 72바이트 이하(`@MaxUtf8Bytes` - BCrypt 한도를 넘으면
+  500이 나던 문제, 한글은 글자당 3바이트라 글자 수 제한으로는 못 막는다).
+  검증은 `RequestValidationTest`. (2) **레이트 리밋(Nginx `limit_req`)**:
+  IP당 `/answers` 분당 20회(burst 10), `/search` 분당 60회(burst 20). 설정과
+  근거, 적용 방법은 docs/deploy.md 20절. 로컬 nginx 컨테이너로 동작은
+  검증했지만 **EC2에는 아직 넣지 않았다 - 다음에 인스턴스를 켤 때 적용할 것**
+  (jar 재배포로는 반영되지 않는다, SSH로 설정 수정 후 `nginx -s reload`).
+  프론트 `ERROR_MESSAGES`에 `RATE_LIMITED`는 추가하지 않았다(Nginx가 주는
+  안내 문구가 그대로 표시됨).
 - **Hikari `maximum-pool-size=50`이 100 VU 부하에서는 여전히 일부 대기
   발생 — 문제는 아니지만 재조정 여지 남김** — 부하테스트(k6) 옵션 C
   재검증(After)에서 성공률이 94.82%로 100%는 아니었다(80~100 VU 구간에
