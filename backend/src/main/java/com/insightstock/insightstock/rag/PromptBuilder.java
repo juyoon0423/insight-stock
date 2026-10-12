@@ -20,9 +20,18 @@ public class PromptBuilder {
     private static final String SYSTEM_PROMPT_PATH = "prompts/rag-system-prompt.txt";
 
     private final String systemPrompt;
+    private final String promptVersion;
 
     public PromptBuilder() {
         this.systemPrompt = loadSystemPrompt();
+        this.promptVersion = AnswerAuditLogger.shortHash(systemPrompt);
+    }
+
+    // 시스템 프롬프트 내용의 해시(12자리). 사람이 올리는 버전 번호 대신 내용에서 계산한다 -
+    // 프롬프트 파일을 한 글자라도 고치면 값이 바뀌므로 "버전 올리는 걸 깜빡"할 수가 없고,
+    // 로그의 답변이 어느 프롬프트로 만들어졌는지 항상 구분된다.
+    public String promptVersion() {
+        return promptVersion;
     }
 
     public RagPrompt build(String query, List<RankedChunk> chunks) {

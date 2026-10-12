@@ -1,6 +1,7 @@
 package com.insightstock.insightstock.rag;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -16,6 +17,7 @@ import com.insightstock.insightstock.search.dto.RankedChunk;
 import java.util.List;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 // 검색과 LLM을 대역으로 바꿔 "모델 답변의 [N] -> 출처" 후처리만 검증한다(비용 0).
 // 실제 LLM 호출 검증은 AnswerServiceManualIT(@Tag("manual"))가 따로 맡는다.
@@ -23,8 +25,11 @@ class AnswerServiceTest {
 
     private final HybridSearchService hybridSearchService = mock(HybridSearchService.class);
     private final ChatCompletionClient chatCompletionClient = mock(ChatCompletionClient.class);
+    private final AnswerAuditLogger answerAuditLogger = mock(AnswerAuditLogger.class);
+    private final PromptBuilder promptBuilder = new PromptBuilder();
     private final AnswerService answerService = new AnswerService(
-            hybridSearchService, new PromptBuilder(), chatCompletionClient, new CitationParser(), 10);
+            hybridSearchService, promptBuilder, chatCompletionClient, new CitationParser(), answerAuditLogger,
+            10, "test-model");
 
     @Test
     void 인용된_번호만_등장_순서대로_출처와_citedNumbers에_담는다() {
@@ -73,6 +78,84 @@ class AnswerServiceTest {
         verify(chatCompletionClient, never()).complete(any());
     }
 
+    // ---- 구조화 로그 ----
+
+    @Test
+    void 답변마다_컨텍스트와_인용_판정을_로그_항목으로_남긴다() {
+        givenChunks(3);
+        givenModelAnswer("매출이 늘었습니다[12]. 부채비율은 낮아졌습니다[2].");
+
+        answerService.answer("질문");
+
+        AnswerLogEntry entry = capturedLogEntry();
+        assertThat(entry.query()).isEqualTo("질문");
+        assertThat(entry.topK()).isEqualTo(10);
+        // 컨텍스트: 프롬프트 번호, 청크 ID, 공시, BM25/벡터 각각의 순위
+        assertThat(entry.context()).extracting(
+                        AnswerLogEntry.ContextChunk::number,
+                        AnswerLogEntry.ContextChunk::chunkId,
+                        AnswerLogEntry.ContextChunk::rceptNo,
+                        AnswerLogEntry.ContextChunk::keywordRank,
+                        AnswerLogEntry.ContextChunk::vectorRank)
+                .containsExactly(
+                        tuple(1, 1L, "rcept-1", 1, null), tuple(2, 2L, "rcept-2", 2, null), tuple(3, 3L, "rcept-3", 3, null));
+        assertThat(entry.citedNumbers()).containsExactly(2);
+        assertThat(entry.outOfRangeCitations()).containsExactly(12);
+        assertThat(entry.refused()).isFalse();
+        assertThat(entry.answeredWithoutCitation()).isFalse();
+        assertThat(entry.llmCalled()).isTrue();
+        assertThat(entry.model()).isEqualTo("test-model");
+        assertThat(entry.promptVersion()).isEqualTo(promptBuilder.promptVersion()).hasSize(12);
+        assertThat(entry.promptTokens()).isEqualTo(100);
+        assertThat(entry.completionTokens()).isEqualTo(20);
+        assertThat(entry.searchMs()).isNotNegative();
+        assertThat(entry.llmMs()).isNotNegative();
+    }
+
+    @Test
+    void 고정_문구로_거절하면_refused로_남긴다() {
+        givenChunks(2);
+        givenModelAnswer("제공된 공시 자료에서는 이 질문에 답할 수 있는 내용을 찾지 못했습니다.");
+
+        answerService.answer("질문");
+
+        AnswerLogEntry entry = capturedLogEntry();
+        assertThat(entry.refused()).isTrue();
+        assertThat(entry.answeredWithoutCitation()).isFalse();
+    }
+
+    @Test
+    void 거절이_아닌데_인용이_없으면_answeredWithoutCitation으로_구분한다() {
+        givenChunks(2);
+        givenModelAnswer("배당금은 1,500원입니다.");
+
+        answerService.answer("질문");
+
+        AnswerLogEntry entry = capturedLogEntry();
+        assertThat(entry.refused()).isFalse();
+        assertThat(entry.answeredWithoutCitation()).isTrue();
+    }
+
+    @Test
+    void 검색_결과가_없어_LLM을_부르지_않은_경우도_로그로_남긴다() {
+        givenChunks(0);
+
+        answerService.answer("질문");
+
+        AnswerLogEntry entry = capturedLogEntry();
+        assertThat(entry.llmCalled()).isFalse();
+        assertThat(entry.refused()).isTrue();
+        assertThat(entry.context()).isEmpty();
+        assertThat(entry.model()).isNull();
+        assertThat(entry.llmMs()).isZero();
+    }
+
+    private AnswerLogEntry capturedLogEntry() {
+        ArgumentCaptor<AnswerLogEntry> captor = ArgumentCaptor.forClass(AnswerLogEntry.class);
+        verify(answerAuditLogger).log(captor.capture());
+        return captor.getValue();
+    }
+
     private void givenChunks(int count) {
         List<RankedChunk> chunks = IntStream.rangeClosed(1, count)
                 .mapToObj(this::chunk)
@@ -89,7 +172,7 @@ class AnswerServiceTest {
                 (long) number,
                 1.0 / number,
                 number,
-                number,
+                null,
                 "rcept-" + number,
                 "회사" + number,
                 "보고서" + number,

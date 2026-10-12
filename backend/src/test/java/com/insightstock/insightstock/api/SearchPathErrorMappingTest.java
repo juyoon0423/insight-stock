@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.insightstock.insightstock.embedding.EmbeddingApiException;
 import com.insightstock.insightstock.embedding.EmbeddingRateLimitException;
+import com.insightstock.insightstock.rag.AnswerAuditLogger;
 import com.insightstock.insightstock.rag.AnswerService;
 import com.insightstock.insightstock.rag.ChatCompletionClient;
 import com.insightstock.insightstock.rag.CitationParser;
@@ -51,7 +52,8 @@ class SearchPathErrorMappingTest {
                 keywordSearchService, vectorSearchService, new RrfFuser(), mock(ChunkRepository.class),
                 searchExecutor, 50, 60, true);
         AnswerService answerService = new AnswerService(
-                hybridSearchService, new PromptBuilder(), mock(ChatCompletionClient.class), new CitationParser(), 10);
+                hybridSearchService, new PromptBuilder(), mock(ChatCompletionClient.class), new CitationParser(),
+                mock(AnswerAuditLogger.class), 10, "test-model");
 
         mockMvc = MockMvcBuilders.standaloneSetup(
                         new SearchController(hybridSearchService, 10), new AnswerController(answerService))
