@@ -134,3 +134,10 @@ k6 run -e BASE_URL=http://localhost:8080 answers-load-test.js
 - `GlobalExceptionHandler.handleRagApi()`가 원인(429 rate limit vs 실제 장애)과 무관하게
   항상 502로 뭉뚱그려서, 클라이언트가 상태 코드만으로 둘을 구분할 수 없다 — 에러 코드를
   세분화하는 개선 후보(예: 429는 429로 그대로 전달, 그 외만 502).
+
+> **후속(2026-10-12): 위 두 이슈 모두 해결됨.** `OpenAiChatCompletionClient`에 429 전용
+> 지수 백오프 재시도(2회, 500ms 시작)를 넣었고, 재시도 소진 시 502가 아니라
+> `429 / LLM_RATE_LIMITED`로 응답하도록 분리했다. 같이 connect 5초 / read 30초 타임아웃도
+> 넣었다(read 30초의 근거: `backend/loadtest/results/answers-summary.json`의 `/answers`
+> p95 3.49초, 최대 3.87초). 설계 근거와 의도적으로 하지 않은 것은
+> `docs/progress.md` "다음 세션 논의거리"의 해당 항목 참고.

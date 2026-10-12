@@ -78,8 +78,9 @@
 > 오늘 진행 상황: Elastic IP 적용 **완료**, 도메인+TLS 적용 **완료**
 > (프론트는 이미 재배포됨 - `next.config.ts`의 rewrite와 옛 IP 기본값도
 > 이때 같이 제거됨), 리질리언스 버그 수정(`OpenAiChatCompletionClient`
-> 재시도, `GlobalExceptionHandler` 429/502 분리) **남음** → 그 뒤 백엔드
-> 재배포. 인스턴스는 그때까지 켜둔다. 이 메모는 재배포가 끝나면 지울 것.
+> 재시도, `GlobalExceptionHandler` 429/502 분리) **코드 완료** → 남은 것은
+> 백엔드 재배포뿐. 인스턴스는 그때까지 켜둔다. 이 메모는 재배포가 끝나면
+> 지울 것.
 
 **4단계(알림) → AWS 배포(EC2+Nginx+Vercel) → 무중단 배포(ShedLock+
 Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동화) →
@@ -157,35 +158,54 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
 
 ## 다음 세션 논의거리 (우선순위 미정)
 
-- **`GlobalExceptionHandler`가 `/answers`의 모든 실패를 원인 불문하고 502로
-  뭉뚱그림 — 별도 개선 후보(재시도/백오프와는 별개)** — 부하테스트(k6)
-  중 실제로 발생한 502 3건은 서버 로그 대조로 전부 OpenAI 429(rate
-  limit)임을 확인했지만, `handleRagApi()`(`api/GlobalExceptionHandler.java:55-63`)가
-  원인과 무관하게 항상 502/`LLM_UNAVAILABLE`만 반환하므로 클라이언트는
-  "OpenAI가 일시적으로 막은 것"과 "실제 서버 장애"를 상태 코드만으로
-  구분할 방법이 없다. 개선 방향 예시: 429는 429로 그대로 전달하거나
-  별도 errorCode(예: `LLM_RATE_LIMITED`)로 분리. **관측성(로그/알람)
-  도입 시 "무엇을 에러로 집계할지" 설계와 맞물리는 문제라 그때 함께
-  고려할 것** - 지금 상태로 관측성부터 붙이면 OpenAI rate limit까지
-  전부 "서버 에러"로 잡혀 알람이 오탐될 수 있다. 이번 부하테스트
-  세션에서는 의도적으로 고치지 않고 발견만 기록(자세한 재현/로그는
-  docs/loadtest.md 참고).
-- **`OpenAiChatCompletionClient`에 재시도/백오프가 없음 — resilience 개선
-  후보(Retry/Circuit breaker 등)** — 부하테스트(k6, `backend/loadtest/`)
-  중 `/answers`에서 502(`LLM_UNAVAILABLE`) 3건이 실제로 발생했고, 서버
-  로그로 원인을 추적한 결과 전부 OpenAI 쪽 TPM(분당 토큰) rate limit
-  (`HttpClientErrorException$TooManyRequests: 429`, "Rate limit reached
-  for gpt-4o-mini ... Limit 200000")이었다 — 우리 버그는 아니었음.
-  `OpenAiEmbeddingClient`(배치 인덱싱용)와 달리 `OpenAiChatCompletionClient`는
-  429를 받아도 즉시 `RagApiException`으로 던지고 끝(재시도 없음,
-  `OpenAiChatCompletionClient.java:42-50`) - 게다가
-  `GlobalExceptionHandler.handleRagApi()`가 원인과 무관하게 항상 502로
-  뭉뚱그려서, 클라이언트 입장에서는 "OpenAI가 잠깐 막은 것"과 "실제
-  장애"를 상태 코드만으로 구분할 수 없다(서버 로그 대조가 필수). 트래픽이
-  더 늘면 이런 일시적 429가 사용자에게 그대로 실패로 노출된다 - 지수
-  백오프 재시도(임베딩 클라이언트와 같은 패턴) 또는 Resilience4j 같은
-  Circuit Breaker 도입을 다음 후보로 남긴다. 이번 세션에서는 의도적으로
-  고치지 않고 발견만 기록.
+- **~~`OpenAiChatCompletionClient`에 재시도/백오프가 없음 /
+  `GlobalExceptionHandler`가 `/answers`의 모든 실패를 502로 뭉뚱그림~~ —
+  해결됨(2026-10-12, 타임아웃 포함, 코드 수정 + 테스트, 배포는 세션 마지막 일괄
+  재배포 때)** — 부하테스트(k6)에서 OpenAI TPM rate limit(429) 3건이 그대로
+  502로 노출됐던 문제(docs/loadtest.md). 두 가지를 고쳤다.
+  (1) **재시도**: `OpenAiChatCompletionClient`가 429를 받으면 지수 백오프로
+  재시도한다. 새 라이브러리(Resilience4j, Spring Retry) 대신 이미 검증된
+  `OpenAiEmbeddingClient`의 직접 구현 패턴을 그대로 따랐다 - 호출 지점이
+  한 곳뿐이고 단일 인스턴스라 Circuit Breaker까지 둘 근거가 아직 없다.
+  다만 사용자가 화면 앞에서 기다리는 요청이라 임베딩 배치(3회, 2000ms
+  시작)보다 훨씬 짧게 잡았다: `rag.chat.rate-limit.max-retries: 2`,
+  `initial-backoff-ms: 500`(500ms→1000ms, 최악의 추가 대기 1.5초).
+  재시도 대상은 실측으로 확인된 429뿐이고, 같은 429라도 크레딧 소진
+  (`insufficient_quota`)은 기다려도 안 풀리므로 재시도하지 않는다.
+  (2) **상태 코드 분리**: 재시도를 소진하면 `RagRateLimitException`
+  (`RagApiException`의 하위 타입)을 던지고, 핸들러가 이를 **HTTP 429 /
+  `LLM_RATE_LIMITED`** 로 응답한다(로그는 error가 아닌 warn). 그 외 LLM
+  실패는 기존대로 502 / `LLM_UNAVAILABLE`. 이제 클라이언트와 향후
+  관측성(알람)이 "잠깐 막힌 것"과 "실제 장애"를 상태 코드로 구분할 수
+  있다.
+  (3) **타임아웃**: `RestClient`에 타임아웃이 아예 없어 OpenAI가 응답을
+  안 주면 무기한 대기하던 문제도 같이 고쳤다 - 라이브 시연 중 화면이
+  그대로 멈출 수 있어 429보다 오히려 위험하다고 판단. connect 5초 / read
+  30초(`rag.chat.api.connect-timeout-ms`/`read-timeout-ms`). read 30초의
+  근거는 부하테스트의 `/answers` p95 3.49초(최대 3.87초) - 정상 응답을 오탐으로
+  끊지 않으면서 무기한 대기는 막는 값. 타임아웃은 재시도 없이 502 /
+  `LLM_UNAVAILABLE`.
+  검증은 `OpenAiChatCompletionClientTest`(JDK 내장 HttpServer로 OpenAI를
+  대신해 실제 HTTP 왕복 - 429 재시도, 소진, 크레딧 소진, 500, 응답 지연
+  타임아웃, 비용 0)와 `GlobalExceptionHandlerTest`(MockMvc standalone)
+  신규 테스트 9개 + 로컬 Postgres/ES를 띄운 전체 `./gradlew test` 31개
+  통과.
+  **의도적으로 안 한 것**: 5xx/타임아웃 재시도(실측 근거 없음),
+  OpenAI의 `Retry-After` 헤더 활용(실제 응답에서 확인한 적 없음), 프론트
+  `ERROR_MESSAGES`에 `LLM_RATE_LIMITED` 추가(백엔드가 준 안내 문구가
+  그대로 표시되므로 충분하다고 판단해 스킵).
+- **[백로그] 검색 경로의 임베딩 호출은 429 분리도 타임아웃도 아직 없음**
+  — 2026-10-12 리질리언스 수정은 `/answers`의 채팅 완성 호출
+  (`OpenAiChatCompletionClient`)만 다뤘다. 질의 임베딩을 담당하는
+  `OpenAiEmbeddingClient`는 그대로다: (1) 429 재시도를 소진하면 여전히
+  502 / `SEARCH_UNAVAILABLE`로 뭉뚱그려지고(`LLM_RATE_LIMITED` 같은 분리
+  없음), 재시도 설정도 배치용 값(3회, 2000ms 시작 = 최악 14초 대기)이라
+  사용자 대면 요청에는 길다. (2) **`RestClient` 타임아웃이 없다** -
+  `/search`는 물론 `/answers`도 답변 생성 전에 질의 임베딩을 먼저
+  호출하므로, 임베딩 API가 멈추면 채팅 쪽 타임아웃과 무관하게 화면이
+  멈출 수 있다. 시연 안정성 관점에서는 (2)가 더 급하다. 고칠 때 주의:
+  이 클라이언트는 배치 임베딩(요청당 100건)과 질의 임베딩이 같이 쓰므로
+  타임아웃/재시도 값을 배치 기준으로도 검증해야 한다.
 - **Hikari `maximum-pool-size=50`이 100 VU 부하에서는 여전히 일부 대기
   발생 — 문제는 아니지만 재조정 여지 남김** — 부하테스트(k6) 옵션 C
   재검증(After)에서 성공률이 94.82%로 100%는 아니었다(80~100 VU 구간에
