@@ -793,6 +793,10 @@ t3.small엔 스왑도 없어서(`Swap: 0B`) 극심한 메모리 압박이 sshd �
 동시 실행)을 실제로 쓰려면 t3.small로는 부족하고 t3.medium 이상이 필요하다**는 게 이번
 세션에서 확정된 사실이다. 평소(단일 인스턴스만 실행) 운영에는 t3.small로 계속 충분하다.
 
+> **2026-10-12 갱신**: 위 마지막 문장은 EC2 DB가 사실상 비어 있던 시점의 결론이다. 로컬
+> 데이터(청크 173,035건 + 1.1GB HNSW 인덱스)를 옮긴 뒤로는 단일 인스턴스 운영에서도
+> t3.small이 첫 검색 직후 무응답이 됐다 — 19절 참고.
+
 ## 18. 단순 재배포 절차와 재배포 기록
 
 blue-green(15절)은 JVM 2개가 동시에 떠야 해서 t3.medium이 필요하다(17절). 평소 t3.small
@@ -845,7 +849,176 @@ curl https://insightstock.site/actuator/health     # {"status":"UP"}
   타임아웃/429 분리)는 배포 환경에서 한 번도 실행되지 않았다. 이전 jar는 EC2의
   `~/insight-stock/app-prev-0731.jar`에 남겨뒀다.
 
+## 19. 로컬 데이터 → EC2 이전과 ES 재색인 (2026-10-12 실행)
+
+EC2 DB에 청크가 0건이라 배포 환경의 검색/답변이 항상 빈 결과였다(18절 "한계"). 로컬의
+`companies`/`disclosures`/`chunks`(임베딩 포함)를 EC2로 옮기고 Elasticsearch를 재색인했다.
+임베딩을 그대로 옮기므로 **OpenAI 호출은 0건**이다(검증용 검색의 질의 임베딩만 발생).
+
+### 결정과 근거
+
+- **세 테이블을 id를 보존한 채 통째로 교체한다.** `chunks.disclosure_id` →
+  `disclosures.company_id` FK로 묶여 있고 로컬과 EC2의 id가 서로 다르며, ES 문서 id도
+  chunk id를 그대로 쓴다(`IndexingService.toDocument`). chunks만 옮길 수는 없다.
+  `users`는 건드리지 않고, `watchlist`는 `corp_code` 기준으로 새 company id에 재매핑했다.
+  EC2가 자체 수집한 disclosures(청크 없음)는 폐기했다.
+- **데이터만 덤프한다**(`--data-only`). 스키마는 양쪽 다 Flyway V7로 같으므로 Flyway 이력을
+  건드릴 이유가 없다.
+- **HNSW 인덱스는 지우고 적재한 뒤 다시 만든다.** 인덱스가 있는 채로 17만 건을 넣으면 건마다
+  그래프를 갱신해 훨씬 느리다. 로컬(arm64)과 EC2(x86_64)의 아키텍처가 달라 pgdata 볼륨을
+  통째로 복사하는 방식은 쓸 수 없다.
+- **재색인은 앱의 색인 경로를 그대로 쓴다.** `INDEXED` 공시를 `CHUNKED`로 되돌리면
+  `IndexingService`가 다시 색인한다 — Nori 매핑이 로컬과 같다는 것이 보장되고 새 도구(ES
+  스냅샷, elasticdump)가 필요 없다. 기본 설정(10분마다 20건)으로는 약 31시간이라 명령줄
+  인자로만 배치/주기를 임시로 키웠다(`application.yml`은 수정하지 않음).
+
+### 사전 실측
+
+| 항목 | 로컬 | EC2 (이전 전) |
+|---|---|---|
+| companies / disclosures / chunks | 118,537 / 5,147 / 173,035 | 401 / 785 / 0 |
+| DB 크기 | 2,941MB (chunks 2,828MB, 그중 HNSW 1,135MB) | 16MB |
+| ES `chunks` 인덱스 | 약 200MB | 0건 |
+| 디스크 | - | 8GB 중 여유 3.8GB |
+
+복원 후 DB 2.9GB + 복원 중 WAL(최대 약 1GB) + ES + 덤프 파일 1.3GB ≈ 5.5~6GB가 필요해
+8GB 디스크로는 불가능했다 → **EBS를 20GB로 확장**(gp3, 월 약 $1.1 추가, 축소 불가,
+인스턴스를 꺼둬도 과금). Amazon Linux 2023은 재부팅 시 파티션/파일시스템을 자동으로
+늘려줘서 `growpart`/`xfs_growfs`를 직접 실행할 필요가 없었다.
+
+### 절차 (실제로 실행한 순서)
+
+```bash
+# 0. t3.medium으로 승격 + EBS 확장 (정지 상태에서) → 재기동. 백엔드 jar는 띄우지 않는다.
+aws ec2 modify-instance-attribute --region ap-northeast-2 --instance-id <INSTANCE_ID> \
+  --instance-type '{"Value":"t3.medium"}'
+aws ec2 modify-volume --region ap-northeast-2 --volume-id <VOLUME_ID> --size 20
+
+# 0-1. EC2 현재 DB 백업 (롤백용) - ~/insight-stock/backup/ec2-pre-migration-2026-10-12.dump
+docker exec insight-stock-postgres pg_dump -U <USER> -d insight_stock -Fc > ec2-pre-migration-2026-10-12.dump
+
+# 1. 로컬에서 덤프 → 전송 → 체크섬 대조
+docker exec insight-stock-postgres pg_dump -U <USER> -d insight_stock -Fc --data-only \
+  -t companies -t disclosures -t chunks > local-data.dump
+scp -i "<PEM_PATH>" local-data.dump ec2-user@<PUBLIC_IP>:~/insight-stock/backup/
+```
+
+2단계(복원, 백엔드가 내려가 있는 상태에서 EC2의 psql로 실행):
+
+```sql
+-- 2-1. watchlist를 corp_code와 함께 대피시키고, HNSW를 지우고, 비운다 (한 트랜잭션)
+BEGIN;
+CREATE TABLE _watchlist_migration AS
+  SELECT w.id, w.user_id, c.corp_code, w.created_at
+  FROM watchlist w JOIN companies c ON c.id = w.company_id;
+DROP INDEX idx_chunks_embedding_hnsw;
+TRUNCATE chunks, disclosures, companies, watchlist, notification;  -- notification은 0건임을 먼저 확인
+COMMIT;
+
+-- 2-2. (셸) pg_restore --data-only --exit-on-error -d insight_stock < local-data.dump
+--      owned 시퀀스의 SEQUENCE SET이 덤프에 포함돼 있어 시퀀스 값도 같이 맞춰진다.
+
+-- 2-3. HNSW 재생성 - DDL은 V1과 동일해야 한다
+SET maintenance_work_mem = '1500MB';
+SET max_parallel_maintenance_workers = 0;  -- 컨테이너 /dev/shm(64MB)로는 병렬 빌드가 실패할 수 있다
+CREATE INDEX idx_chunks_embedding_hnsw ON chunks USING hnsw (embedding vector_cosine_ops);
+
+-- 2-4. watchlist 재매핑, 통계 갱신
+INSERT INTO watchlist (id, user_id, company_id, created_at)
+  SELECT m.id, m.user_id, c.id, m.created_at
+  FROM _watchlist_migration m JOIN companies c USING (corp_code);
+DROP TABLE _watchlist_migration;
+ANALYZE companies; ANALYZE disclosures; ANALYZE chunks; ANALYZE watchlist;
+```
+
+3단계(재색인):
+
+```bash
+# INDEXED → CHUNKED로 되돌린 뒤, 배치/주기를 임시로 키워 기동
+#   UPDATE disclosures SET document_status='CHUNKED' WHERE document_status='INDEXED';
+(SERVER_PORT=8082 nohup java -jar app.jar \
+  --indexing.collector.batch-size=4000 --indexing.collector.fixed-delay-ms=60000 \
+  > app.log 2>&1 < /dev/null &)
+# CHUNKED가 0건이 되면 프로세스를 내리고 인자 없이(기본 설정) 다시 띄운다
+```
+
+### 결과 (실측)
+
+| 단계 | 소요 | 비고 |
+|---|---|---|
+| 로컬 덤프 | 2분 6초 | 1.30GB (custom format) |
+| 전송 | 29초 | sha256 일치 |
+| 복원 전체 | 5분 10초 (15:46:11~15:51:21 KST) | 적재 1분 46초 + HNSW 2분 59초 + 나머지 |
+| ES 재색인 | 약 8분 | 3,715건 전부 성공(실패 0), ES 문서 173,035건, 209MB |
+
+- 건수: companies 118,537 / disclosures 5,147 / chunks 173,035 — 로컬과 일치. 임베딩 NULL 0건.
+  청크 전체(id, disclosure_id, chunk_index, content)를 이어 붙인 md5도 로컬과 일치.
+- `users` 3명 그대로, `watchlist` 1건은 같은 회사(`corp_code` 기준)의 새 company id로 재매핑.
+- HNSW 인덱스 1,134MB, DB 2,879MB. 디스크는 20GB 중 8.3GB 사용.
+- `EXPLAIN (ANALYZE)`: `Index Scan using idx_chunks_embedding_hnsw on chunks`, 304ms(캐시가
+  비어 있던 첫 실행, shared read=550).
+- **t3.medium**에서 `https://insightstock.site` 기준: `/search` 첫 호출 5.3초, 이후
+  1.0~2.5초(전부 200, 10건). `/answers` 2.3~3.1초(200, 출처 포함). 배포 환경에서 채팅 완성
+  경로(재시도/타임아웃, 18절)가 처음으로 실제 실행됐다.
+
+### 발견 — t3.small은 이 데이터를 올린 상태로 검색을 감당하지 못한다
+
+같은 날 두 번 인스턴스가 무응답(SSH 배너 교환 타임아웃, HTTP 전부 타임아웃, AWS 상태 체크는
+ok — 17절과 같은 증상)이 됐다.
+
+1. **이전 전, t3.small에서 백업용 `pg_dump` 실행 직후.** 당시 `free`의 available이 31MB였다
+   (Postgres + Elasticsearch + JVM 1개만으로 이미 한계). 16MB짜리 DB를 덤프하는 것만으로
+   넘어갔다. 정상 정지 요청은 4분 넘게 `stopping`에 머문 뒤 멈췄다.
+2. **이전 후, t3.small로 되돌린 직후.** 백엔드 기동 직후 available 61MB. 첫 `/search`
+   1건은 4.3초에 성공했지만 그 뒤의 모든 요청이 타임아웃됐고, 강제 정지로 복구했다.
+
+스왑이 없어(`Swap: 0B`) 메모리가 모자라면 느려지는 게 아니라 통째로 멈춘다. 원인 분해
+(1.1GB HNSW 인덱스의 페이지 캐시 요구, 같은 날 배포된 Hikari 풀 50/검색 스레드 100의
+영향 등)는 **측정하지 못했다 — 추정이다.** 확정된 사실은 "t3.medium에서는 정상, t3.small에서는
+첫 검색 후 무응답"뿐이다. 17절의 "평소 단일 인스턴스 운영에는 t3.small로 충분하다"는 결론은
+이 데이터 이전 이후로는 유효하지 않다.
+
+**대응(같은 날 결정)**: 기본은 t3.small로 정지해 두고, 실제로 쓸 때만 t3.medium으로 올린다.
+t3.small에서는 백엔드를 띄우지 않는다.
+
+```bash
+# 켤 때 (정지 상태에서)
+aws ec2 modify-instance-attribute --region ap-northeast-2 --instance-id <INSTANCE_ID> \
+  --instance-type '{"Value":"t3.medium"}'
+# → 이후 7절(재기동) 그대로
+
+# 끌 때
+aws ec2 stop-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID>
+aws ec2 wait instance-stopped --region ap-northeast-2 --instance-ids <INSTANCE_ID>
+aws ec2 modify-instance-attribute --region ap-northeast-2 --instance-id <INSTANCE_ID> \
+  --instance-type '{"Value":"t3.small"}'
+```
+
+이 결정을 적용해 t3.medium으로 다시 켠 뒤 재확인했다(16:29 KST): companies 118,537 /
+chunks 173,035 / 임베딩 NULL 0건 / ES 173,035건, `/search` 200(3.1초, 10건), `/answers`
+200(3.3초, 출처 포함), 여유 메모리 1.7GB. disclosures는 수집 스케줄러가 돌아 5,479건으로
+늘었다(정상 동작). t3.small에 스왑을 추가하면 버티는지는 검증하지 않았다.
+
+### 작업 중 얻은 주의점
+
+- **t3.small에서는 `pg_dump` 같은 추가 작업도 띄우지 말 것** — 위 1번. 무거운 작업은 먼저
+  t3.medium으로 올린 뒤에 한다.
+- **원격 프로세스를 패턴으로 찾아 종료할 때, 같은 SSH 명령 안에 그 패턴 문자열을 넣지 말 것.**
+  `ssh ... 'kill $(ps ... | grep "[j]ava -jar"); ... nohup java -jar app.jar ...'`처럼 쓰면
+  원격 셸 자신의 명령줄이 패턴에 걸려 셸까지 종료되고 뒤따르는 명령이 실행되지 않는다(이번에
+  두 번 겪음). 종료와 기동을 별도의 SSH 호출로 나눈다(18절 3번처럼 PID를 먼저 확인).
+- 재색인 중에는 다른 스케줄러도 평소대로 돈다(공시 수집으로 PENDING이 721 → 925건으로
+  늘었다). DART 호출은 무료라 문제없지만, 건수 비교는 세 테이블 교체 직후에 할 것.
+- 롤백: `~/insight-stock/backup/ec2-pre-migration-2026-10-12.dump`(이전 직전 EC2 DB 전체,
+  4.9MB)를 `pg_restore --clean`으로 되돌린다. 같은 폴더의 `restore.sh`/`restore.log`는 이번에
+  실제로 실행한 스크립트와 그 출력이다.
+
 ## 알려진 제약 / 다음 단계 후보
+
+- **t3.small은 데이터 이전(19절) 이후 검색을 감당하지 못한다** — 첫 검색 직후 인스턴스가
+  무응답이 됐다(2026-10-12 실측). 그래서 기본은 t3.small로 정지, 쓸 때만 t3.medium으로
+  올린다(19절). t3.small에서는 백엔드를 띄우지 말 것.
+- EBS는 20GB다(19절). 인스턴스를 꺼둬도 볼륨 요금은 나간다(8GB 대비 월 약 $1.1 추가).
 
 - ~~퍼블릭 IP가 껐다 켤 때마다 바뀐다~~ — **해결됨(2026-10-12, Elastic IP 적용, 12절).**
   stop → start 후에도 IP가 유지되고 Vercel 재배포 없이 연동이 유지됨을 실측으로 확인했다.
