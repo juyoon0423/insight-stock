@@ -62,3 +62,39 @@ jobs:
       - name: Stop infra
         if: always()
         run: docker compose down
+
+  # 프론트엔드는 백엔드/인프라 없이 돌 수 있어 별도 job으로 병렬 실행한다. Vercel 배포는
+  # 자동이 아니라(docs/deploy.md 18절) 깨진 프론트가 그대로 배포될 수 있으므로, 최소한 main에
+  # 들어오는 시점에 lint/타입/단위 테스트/빌드가 통과하는지는 여기서 잡는다.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      # NEXT_PUBLIC_*은 빌드 시점에 번들에 박힌다 - 빌드가 되는지만 보면 되므로 더미 값을 준다.
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
