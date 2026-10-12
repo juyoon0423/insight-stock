@@ -7,6 +7,12 @@
 방침([docs/deploy.md](./deploy.md), [progress.md](./progress.md) 참고)과 맞지 않아서
 당분간 배포는 수동으로 유지한다.
 
+> **2026-10-12 갱신**: `frontend` job을 추가했다(Node 22, `npm ci` → lint → `tsc --noEmit` →
+> `npm test` → `npm run build`). 백엔드 job과 병렬로 돌고 Secrets가 필요 없다. Vercel 배포가
+> 자동이 아니라서 깨진 프론트가 그대로 배포되는 것을 막는 최소한의 장치다. 또 백엔드 기본 test에
+> 컨텍스트를 띄우는 테스트가 하나 늘었다(`SecurityAccessTest` - 유료 API 호출 없음, DB 조회만).
+> 아래 본문은 백엔드 job에 대한 기존 설명이다.
+
 ## 워크플로우 파일
 
 `.github/workflows/ci.yml` — 트리거는 `main` 브랜치 push와 모든 PR.
