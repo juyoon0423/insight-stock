@@ -793,6 +793,58 @@ t3.small엔 스왑도 없어서(`Swap: 0B`) 극심한 메모리 압박이 sshd �
 동시 실행)을 실제로 쓰려면 t3.small로는 부족하고 t3.medium 이상이 필요하다**는 게 이번
 세션에서 확정된 사실이다. 평소(단일 인스턴스만 실행) 운영에는 t3.small로 계속 충분하다.
 
+## 18. 단순 재배포 절차와 재배포 기록
+
+blue-green(15절)은 JVM 2개가 동시에 떠야 해서 t3.medium이 필요하다(17절). 평소 t3.small
+에서는 "내리고 → 교체하고 → 올리는" 단순 재배포를 쓴다. 수십 초의 중단이 생긴다
+(2026-10-12 실측: 종료부터 헬스체크 통과까지 약 30초, 그 사이 502).
+
+```bash
+# 0. 로컬에서 최신 main으로 빌드
+cd backend && ./gradlew clean build -x test
+
+# 1. 실행 중인 app.jar를 덮어쓰지 않도록 별도 이름으로 전송하고 체크섬을 대조
+scp -i "<PEM_PATH>" backend/build/libs/insight-stock-0.0.1-SNAPSHOT.jar \
+  ec2-user@<PUBLIC_IP>:~/insight-stock/app-new.jar
+shasum -a 256 backend/build/libs/insight-stock-0.0.1-SNAPSHOT.jar          # 로컬
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "sha256sum ~/insight-stock/app-new.jar"   # EC2
+
+# 2. 라이브 포트(14절)와 Postgres/ES healthy 여부(7절 주의 1)를 먼저 확인
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
+  "grep -o 'server 127.0.0.1:[0-9]*' /etc/nginx/conf.d/insightstock-backend.conf; \
+   docker inspect --format='{{.State.Health.Status}}' insight-stock-postgres insight-stock-elasticsearch"
+
+# 3. 기존 프로세스 종료 → 이전 jar는 롤백용으로 남기고 교체 → 같은 포트로 기동
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "ps -eo pid,args | grep '[j]ava -jar'"   # PID 확인
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "kill <PID>"
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
+  "cd ~/insight-stock && mv app.jar app-prev.jar && mv app-new.jar app.jar && \
+   (SERVER_PORT=8082 nohup java -jar app.jar > app.log 2>&1 < /dev/null &)"
+
+# 4. 검증
+curl https://insightstock.site/actuator/health     # {"status":"UP"}
+```
+
+롤백: 새 프로세스를 내리고 `mv app.jar app-bad.jar && mv app-prev.jar app.jar` 후 3번의
+기동 명령을 다시 실행한다.
+
+### 재배포 기록
+
+- **2026-10-12 재배포 완료** (커밋 `b8f36a3` 기준 빌드, 이전 배포본은 2026-07-31 빌드).
+  포함된 변경사항: 검색 스레드풀/HikariCP 병목 수정(`193e7c5`), `OpenAiChatCompletionClient`
+  429 재시도/백오프 + connect/read 타임아웃, `GlobalExceptionHandler` 429/502 응답 분리
+  (`fe66bc3`), `OpenAiEmbeddingClient` 단일/배치 경로 분리 타임아웃(`622b762`).
+  검증: Flyway 7개 마이그레이션 검증 통과, 헬스체크 `UP`, `/search`·`/answers` 200,
+  CORS 프리플라이트 200, 기동 이후 로그에 WARN/ERROR 없음. 새 설정 키
+  (`rag.chat.rate-limit.*`, `rag.chat.api.*-timeout-ms`, `embedding.api.*`)는 실행 중인
+  jar의 `application.yml`에 들어 있고 EC2 `.env`가 덮어쓰지 않음을 확인했다(이 키들은
+  기본값 없는 `@Value`라 값이 없으면 기동 자체가 실패한다 — Spring은 프로퍼티 값을
+  로그로 남기지 않아 이것이 로딩의 증거다). **한계**: EC2 DB에 청크가 0건이라 `/search`는
+  결과 0건, `/answers`는 "검색 결과 없음 - LLM 호출 없이 응답"으로 끝났다 — 질의 임베딩
+  경로(새 타임아웃 클라이언트)는 실제로 호출돼 정상 동작했지만, 채팅 완성 경로(재시도/
+  타임아웃/429 분리)는 배포 환경에서 한 번도 실행되지 않았다. 이전 jar는 EC2의
+  `~/insight-stock/app-prev-0731.jar`에 남겨뒀다.
+
 ## 알려진 제약 / 다음 단계 후보
 
 - ~~퍼블릭 IP가 껐다 켤 때마다 바뀐다~~ — **해결됨(2026-10-12, Elastic IP 적용, 12절).**
