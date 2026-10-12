@@ -6,6 +6,7 @@ import com.insightstock.insightstock.auth.InvalidRefreshTokenException;
 import com.insightstock.insightstock.embedding.EmbeddingApiException;
 import com.insightstock.insightstock.notification.NotificationNotFoundException;
 import com.insightstock.insightstock.rag.RagApiException;
+import com.insightstock.insightstock.rag.RagRateLimitException;
 import com.insightstock.insightstock.watchlist.CompanyNotFoundException;
 import com.insightstock.insightstock.watchlist.DuplicateWatchlistException;
 import com.insightstock.insightstock.watchlist.WatchlistNotFoundException;
@@ -50,6 +51,21 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleMissingParameter(MissingServletRequestParameterException ex, HttpServletRequest request) {
         return problemDetail(
                 HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", ex.getParameterName() + " 파라미터가 필요합니다.", request);
+    }
+
+    // OpenAI rate limit(429)으로 재시도까지 소진한 경우는 "실제 장애"(아래 502)와 구분해
+    // 429로 응답한다 - 클라이언트가 상태 코드만으로 "잠시 후 다시 시도하면 되는 상황"임을
+    // 알 수 있어야 하고, 서버 쪽에서도 이걸 장애로 집계하면 알람이 오탐된다(그래서 로그
+    // 레벨도 error가 아니라 warn). RagRateLimitException이 RagApiException의 하위 타입이라
+    // Spring이 더 구체적인 이 핸들러를 먼저 고른다.
+    @ExceptionHandler(RagRateLimitException.class)
+    public ProblemDetail handleRagRateLimit(RagRateLimitException ex, HttpServletRequest request) {
+        log.warn("RAG 답변 생성 실패 - OpenAI rate limit: {}", ex.getMessage());
+        return problemDetail(
+                HttpStatus.TOO_MANY_REQUESTS,
+                "LLM_RATE_LIMITED",
+                "지금 요청이 몰려 답변을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.",
+                request);
     }
 
     @ExceptionHandler(RagApiException.class)
