@@ -283,6 +283,21 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   (jar 재배포로는 반영되지 않는다, SSH로 설정 수정 후 `nginx -s reload`).
   프론트 `ERROR_MESSAGES`에 `RATE_LIMITED`는 추가하지 않았다(Nginx가 주는
   안내 문구가 그대로 표시됨).
+- **~~클라이언트의 잘못된 요청이 500으로 응답됨~~ — 해결됨(2026-10-12, 배포는
+  아직 안 함)** — 깨진 JSON, `?topK=abc`, `/watchlist/abc`, 지원하지 않는
+  메서드 같은 요청은 스프링 MVC가 컨트롤러를 부르기 전에 예외로 걸러내는데,
+  전용 핸들러가 없어 `GlobalExceptionHandler`의 `Exception` 핸들러가 전부
+  500 / `INTERNAL_ERROR`로 응답하고 error 로그를 남기고 있었다(공개 API라
+  잘못된 요청만으로 error 로그가 쌓여 진짜 장애가 묻히는 문제도 있었다).
+  `StandardClientErrorMappingTest`로 8개 경우 전부 500임을 먼저 재현한 뒤
+  전용 핸들러를 추가했다. 새 응답:
+  깨진 JSON/본문 필드 타입 오류 → 400 / `MALFORMED_REQUEST`,
+  쿼리 파라미터·경로 변수 타입 오류 → 400 / `VALIDATION_ERROR`,
+  지원하지 않는 메서드 → 405 / `METHOD_NOT_ALLOWED`(`Allow` 헤더 포함),
+  잘못된 Content-Type → 415 / `UNSUPPORTED_MEDIA_TYPE`,
+  없는 경로 → 404 / `NOT_FOUND`. 이 응답들은 로그를 남기지 않는다.
+  경로의 ID가 숫자가 아닌 경우를 404가 아니라 400으로 둔 이유: 404는
+  "형식은 맞는데 대상이 없다"(`WATCHLIST_NOT_FOUND` 등)에만 쓰기 위함.
 - **Hikari `maximum-pool-size=50`이 100 VU 부하에서는 여전히 일부 대기
   발생 — 문제는 아니지만 재조정 여지 남김** — 부하테스트(k6) 옵션 C
   재검증(After)에서 성공률이 94.82%로 100%는 아니었다(80~100 VU 구간에

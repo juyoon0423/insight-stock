@@ -20,10 +20,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 // OpenAI/Elasticsearch/Postgres의 원본 에러 메시지를 그대로 클라이언트에 보내지 않는다 -
 // 내부 구조나 API 키 관련 정보가 새 나갈 수 있어서, 서버 로그에는 전체 예외를 남기고
@@ -54,6 +61,59 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleMissingParameter(MissingServletRequestParameterException ex, HttpServletRequest request) {
         return problemDetail(
                 HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", ex.getParameterName() + " 파라미터가 필요합니다.", request);
+    }
+
+    // ---- 스프링 MVC가 컨트롤러를 부르기 전에 걸러내는 "잘못된 요청" ----
+    // 아래 예외들은 전부 클라이언트가 요청을 잘못 보낸 경우다. 전용 핸들러가 없으면 맨 아래
+    // Exception 핸들러가 받아 500/INTERNAL_ERROR가 되고 error 로그까지 남는다(2026-10-12
+    // StandardClientErrorMappingTest로 재현). 서버 장애가 아니므로 로그도 남기지 않는다 -
+    // 누구나 호출할 수 있는 공개 API라, 잘못된 요청마다 error 로그가 쌓이면 진짜 장애가 묻힌다.
+    // 스프링은 예외 타입이 가장 가까운 핸들러를 고르므로 선언 순서와 무관하게 이 전용 핸들러들이
+    // Exception 핸들러보다 먼저 선택된다.
+
+    // 본문 JSON이 깨졌거나(따옴표/괄호 누락), 필드 타입이 틀린 경우(topK에 문자열 등).
+    // Jackson의 원본 메시지에는 내부 클래스명이 들어 있어 클라이언트에 그대로 주지 않는다.
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail handleMessageNotReadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
+        return problemDetail(
+                HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST", "요청 본문을 읽을 수 없습니다. JSON 형식을 확인해주세요.", request);
+    }
+
+    // 쿼리 파라미터나 경로 변수의 타입이 틀린 경우(?topK=abc, /watchlist/abc). 경로의 ID가
+    // 숫자가 아닌 것은 "그런 항목이 없다"(404)가 아니라 "요청 형식이 틀렸다"(400)로 본다 -
+    // 404는 형식은 맞는데 대상이 없을 때(WATCHLIST_NOT_FOUND 등)를 위해 남겨둔다.
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ProblemDetail handleTypeMismatch(MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        return problemDetail(
+                HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", ex.getName() + " 파라미터의 형식이 올바르지 않습니다.", request);
+    }
+
+    // 경로는 있는데 그 HTTP 메서드는 지원하지 않는 경우. 표준에 따라 허용 메서드를 Allow
+    // 헤더로 알려준다(헤더를 붙여야 해서 이 핸들러만 ResponseEntity를 반환한다).
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        ProblemDetail body = problemDetail(
+                HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "지원하지 않는 HTTP 메서드입니다.", request);
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).headers(ex.getHeaders()).body(body);
+    }
+
+    // Content-Type이 application/json이 아닌 경우(헤더 없이 보낸 curl 등).
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ProblemDetail handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException ex, HttpServletRequest request) {
+        return problemDetail(
+                HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+                "UNSUPPORTED_MEDIA_TYPE",
+                "지원하지 않는 Content-Type입니다. application/json으로 보내주세요.",
+                request);
+    }
+
+    // 매핑된 경로가 없는 경우. 실제 앱에서는 정적 리소스 핸들러가 마지막으로 받아
+    // NoResourceFoundException을 던지고, 그 핸들러가 없는 구성에서는 NoHandlerFoundException이다.
+    // (비로그인 요청은 여기까지 오기 전에 Spring Security가 401로 먼저 응답한다.)
+    @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ProblemDetail handleNotFound(Exception ex, HttpServletRequest request) {
+        return problemDetail(HttpStatus.NOT_FOUND, "NOT_FOUND", "존재하지 않는 경로입니다.", request);
     }
 
     // OpenAI rate limit(429)으로 재시도까지 소진한 경우는 "실제 장애"(아래 502)와 구분해
