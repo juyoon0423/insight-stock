@@ -238,14 +238,37 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   + 전체 `./gradlew test` 36개 통과. 단일 10초/배치 60초는 실측 분포가
   아니라 경로 성격에 맞춰 정한 값이다 - 배치 임베딩을 다시 돌릴 때
   요청당 실제 소요 시간을 확인해 60초가 충분한지 볼 것.
-- **[백로그] 검색 경로의 임베딩 429는 아직 502로 뭉뚱그려짐** —
-  2026-10-12 리질리언스 수정에서 429 처리는 `/answers`의 채팅 완성 호출만
-  다뤘다. `OpenAiEmbeddingClient`는 429 재시도를 소진하면 여전히 502 /
-  `SEARCH_UNAVAILABLE`로 응답하고(`LLM_RATE_LIMITED` 같은 분리 없음),
-  재시도 설정도 배치용 값(3회, 2000ms 시작 = 최악 14초 대기)이 질의
-  경로에 그대로 적용돼 사용자 대면 요청에는 길다. 이제 경로가
-  `embedQuery`/`embed`로 나뉘어 있으니 재시도 값도 경로별로 분리할 수
-  있다. 의도적으로 이번 범위에서 제외했다.
+- **~~[백로그] 검색 경로의 임베딩 429는 아직 502로 뭉뚱그려짐~~ — 해결됨
+  (2026-10-12, 배포는 아직 안 함). 단, 원래 설명이 틀렸었다: 실제 증상은
+  502가 아니라 500이었다** — 이 항목과 바로 위 "임베딩 호출에 타임아웃 없음"
+  항목은 질의 임베딩 실패가 502 / `SEARCH_UNAVAILABLE`로 나간다고 적었지만,
+  실제 요청 경로에서는 **원인과 무관하게 전부 500 / `INTERNAL_ERROR`** 였다
+  (타임아웃, 429 소진, 크레딧 소진 모두). `HybridSearchService`가 임베딩
+  호출을 `CompletableFuture` 안에서 실행하고 `join()`하기 때문에 예외가
+  `CompletionException`에 감싸져 올라오고, Spring은 바깥 타입부터 핸들러를
+  찾으므로 `GlobalExceptionHandler`의 `Exception` 핸들러가 먼저 잡았다.
+  `/search`와 `/answers`(답변 전에 같은 검색을 거침) 둘 다 해당했다.
+  기존 테스트는 클라이언트 단위(`OpenAiEmbeddingClientTest`)와 예외를
+  컨트롤러에서 직접 던지는 방식(`GlobalExceptionHandlerTest`)뿐이라 "감싸진
+  상태"를 한 번도 거치지 않아 놓쳤다 - 실제 `HybridSearchService`와
+  컨트롤러를 그대로 쓰는 `SearchPathErrorMappingTest`로 먼저 500을 재현한
+  뒤 고쳤다. 고친 것:
+  (1) **감싼 예외 풀기**: `GlobalExceptionHandler`가 `CompletionException`/
+  `ExecutionException`을 받으면 원인을 꺼내 원래 예외의 핸들러로 다시
+  보낸다. 분류 대상이 아닌 원인(ES 장애 등)은 기존대로 500이다.
+  (2) **429 분리**: 채팅 쪽과 같은 규칙을 임베딩에도 적용했다. 재시도를
+  소진하면 `EmbeddingRateLimitException`(`EmbeddingApiException`의 하위
+  타입) → **HTTP 429 / `SEARCH_RATE_LIMITED`**(로그는 warn), 크레딧 소진
+  (`insufficient_quota`)은 재시도 없이 502 / `SEARCH_UNAVAILABLE`, 그 외
+  실패와 타임아웃도 502 / `SEARCH_UNAVAILABLE`.
+  검증: `SearchPathErrorMappingTest` 5개(`/search`·`/answers` 각각 502와
+  429, 분류 밖 원인은 500 유지) + `OpenAiEmbeddingClientTest` 2개 추가
+  (429 소진, 크레딧 소진), 전부 비용 0.
+  **아직 남은 것**: 질의 경로의 재시도 값이 배치용(3회, 2000ms 시작 =
+  최악 14초 대기) 그대로다 - 사용자 대면 요청에는 길다. 경로가
+  `embedQuery`/`embed`로 나뉘어 있으니 값도 경로별로 분리할 수 있다.
+  프론트 `ERROR_MESSAGES`에는 `SEARCH_RATE_LIMITED`를 추가하지 않았다
+  (`LLM_RATE_LIMITED`와 같은 이유 - 백엔드 안내 문구가 그대로 표시됨).
 - **Hikari `maximum-pool-size=50`이 100 VU 부하에서는 여전히 일부 대기
   발생 — 문제는 아니지만 재조정 여지 남김** — 부하테스트(k6) 옵션 C
   재검증(After)에서 성공률이 94.82%로 100%는 아니었다(80~100 VU 구간에

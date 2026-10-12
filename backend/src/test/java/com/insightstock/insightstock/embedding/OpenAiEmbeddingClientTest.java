@@ -32,6 +32,7 @@ class OpenAiEmbeddingClientTest {
     private HttpServer server;
     private final AtomicInteger callCount = new AtomicInteger();
     private volatile String responseBody = ONE_ITEM_BODY;
+    private volatile int responseStatus = 200;
     // 응답을 보내기 전에 서버가 일부러 지연하는 시간.
     private volatile long responseDelayMs = 0;
     private OpenAiEmbeddingClient client;
@@ -45,7 +46,7 @@ class OpenAiEmbeddingClientTest {
             sleepQuietly(responseDelayMs);
             byte[] bytes = responseBody.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.sendResponseHeaders(responseStatus, bytes.length);
             exchange.getResponseBody().write(bytes);
             exchange.close();
         });
@@ -122,6 +123,30 @@ class OpenAiEmbeddingClientTest {
         // 단일 타임아웃(300ms)에 끊긴 게 아니라 배치 타임아웃(2초)까지는 기다렸고,
         // 서버 응답(4초)을 끝까지 기다리지는 않았는지.
         assertThat(elapsedMs).isBetween(1800L, 3700L);
+        assertThat(callCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void 속도제한_429가_계속되면_재시도를_소진하고_EmbeddingRateLimitException을_던진다() {
+        responseStatus = 429;
+        responseBody = "{\"error\":{\"message\":\"Rate limit reached\",\"code\":\"rate_limit_exceeded\"}}";
+
+        assertThatThrownBy(() -> client.embedQuery("질의"))
+                .isInstanceOf(EmbeddingRateLimitException.class)
+                .hasMessageContaining("재시도 3회 소진");
+        // 최초 1회 + 재시도 3회
+        assertThat(callCount.get()).isEqualTo(4);
+    }
+
+    @Test
+    void 크레딧_소진_429는_재시도하지_않고_일반_장애로_취급한다() {
+        responseStatus = 429;
+        responseBody = "{\"error\":{\"message\":\"You exceeded your current quota\",\"code\":\"insufficient_quota\"}}";
+
+        assertThatThrownBy(() -> client.embedQuery("질의"))
+                .isInstanceOf(EmbeddingApiException.class)
+                .isNotInstanceOf(EmbeddingRateLimitException.class)
+                .hasMessageContaining("insufficient_quota");
         assertThat(callCount.get()).isEqualTo(1);
     }
 

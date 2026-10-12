@@ -4,6 +4,7 @@ import com.insightstock.insightstock.auth.DuplicateEmailException;
 import com.insightstock.insightstock.auth.InvalidCredentialsException;
 import com.insightstock.insightstock.auth.InvalidRefreshTokenException;
 import com.insightstock.insightstock.embedding.EmbeddingApiException;
+import com.insightstock.insightstock.embedding.EmbeddingRateLimitException;
 import com.insightstock.insightstock.notification.NotificationNotFoundException;
 import com.insightstock.insightstock.rag.RagApiException;
 import com.insightstock.insightstock.rag.RagRateLimitException;
@@ -12,6 +13,8 @@ import com.insightstock.insightstock.watchlist.DuplicateWatchlistException;
 import com.insightstock.insightstock.watchlist.WatchlistNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,6 +81,18 @@ public class GlobalExceptionHandler {
                 request);
     }
 
+    // 질의 임베딩의 rate limit(429) 재시도 소진 - 위 handleRagRateLimit과 같은 이유로
+    // "실제 장애"(아래 502)와 구분해 429로 응답하고 로그도 warn으로 남긴다.
+    @ExceptionHandler(EmbeddingRateLimitException.class)
+    public ProblemDetail handleEmbeddingRateLimit(EmbeddingRateLimitException ex, HttpServletRequest request) {
+        log.warn("검색용 임베딩 실패 - OpenAI rate limit: {}", ex.getMessage());
+        return problemDetail(
+                HttpStatus.TOO_MANY_REQUESTS,
+                "SEARCH_RATE_LIMITED",
+                "지금 요청이 몰려 검색하지 못했습니다. 잠시 후 다시 시도해주세요.",
+                request);
+    }
+
     @ExceptionHandler(EmbeddingApiException.class)
     public ProblemDetail handleEmbeddingApi(EmbeddingApiException ex, HttpServletRequest request) {
         log.error("검색용 임베딩 실패", ex);
@@ -86,6 +101,40 @@ public class GlobalExceptionHandler {
                 "SEARCH_UNAVAILABLE",
                 "검색 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
                 request);
+    }
+
+    // HybridSearchService는 키워드/벡터 검색을 CompletableFuture로 병렬 실행하고 join()하므로,
+    // 그 안에서 난 예외(질의 임베딩 실패 등)는 CompletionException에 감싸져 올라온다. Spring은
+    // 바깥 예외 타입부터 핸들러를 찾는데 CompletionException은 맨 아래 Exception 핸들러에
+    // 걸리므로, 따로 풀어주지 않으면 원인과 무관하게 전부 500/INTERNAL_ERROR가 된다
+    // (2026-10-12 SearchPathErrorMappingTest로 재현). 감싼 껍질을 벗겨 원래 예외의 핸들러로
+    // 다시 보낸다. 여기서 분류하지 않는 원인(ES 장애 등)은 기존대로 500이다.
+    @ExceptionHandler({CompletionException.class, ExecutionException.class})
+    public ProblemDetail handleAsyncWrapped(Exception ex, HttpServletRequest request) {
+        Throwable cause = unwrapAsync(ex);
+        if (cause instanceof EmbeddingRateLimitException embeddingRateLimit) {
+            return handleEmbeddingRateLimit(embeddingRateLimit, request);
+        }
+        if (cause instanceof EmbeddingApiException embeddingApi) {
+            return handleEmbeddingApi(embeddingApi, request);
+        }
+        if (cause instanceof RagRateLimitException ragRateLimit) {
+            return handleRagRateLimit(ragRateLimit, request);
+        }
+        if (cause instanceof RagApiException ragApi) {
+            return handleRagApi(ragApi, request);
+        }
+        return handleUnexpected(ex, request);
+    }
+
+    // 비동기 래퍼가 여러 겹일 수 있어(예: allOf 안의 future) 래퍼가 아닌 예외가 나올 때까지 벗긴다.
+    private Throwable unwrapAsync(Throwable ex) {
+        Throwable current = ex;
+        while ((current instanceof CompletionException || current instanceof ExecutionException)
+                && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
     }
 
     @ExceptionHandler(DuplicateEmailException.class)

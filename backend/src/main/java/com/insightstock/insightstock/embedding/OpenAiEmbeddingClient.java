@@ -101,8 +101,17 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
                         .retrieve()
                         .body(OpenAiEmbeddingResponse.class);
             } catch (HttpClientErrorException.TooManyRequests e) {
-                if (attempt >= maxRetries) {
+                // OpenAI는 "크레딧 소진"도 429로 응답한다. 이건 기다려도 풀리지 않으므로
+                // 재시도하지 않고 일반 장애(EmbeddingApiException -> 502)로 취급한다
+                // (OpenAiChatCompletionClient와 같은 규칙).
+                if (isQuotaExhausted(e)) {
                     throw new EmbeddingApiException(
+                            "OpenAI 임베딩 API 호출 실패 (텍스트 %d건, insufficient_quota - 크레딧 소진)"
+                                    .formatted(textCount),
+                            e);
+                }
+                if (attempt >= maxRetries) {
+                    throw new EmbeddingRateLimitException(
                             "OpenAI 임베딩 API 호출 실패 (텍스트 %d건, 429 재시도 %d회 소진)"
                                     .formatted(textCount, maxRetries),
                             e);
@@ -116,6 +125,10 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
                 throw new EmbeddingApiException("OpenAI 임베딩 API 호출 실패 (텍스트 %d건)".formatted(textCount), e);
             }
         }
+    }
+
+    private boolean isQuotaExhausted(HttpClientErrorException e) {
+        return e.getResponseBodyAsString().contains("insufficient_quota");
     }
 
     private void sleep(long millis) {
