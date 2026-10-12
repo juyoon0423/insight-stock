@@ -17,8 +17,10 @@ public class DartListClient {
 
     public DartListClient(
             @Value("${dart.api.base-url}") String baseUrl,
-            @Value("${dart.api.key}") String apiKey) {
-        this.restClient = RestClient.builder().baseUrl(baseUrl).build();
+            @Value("${dart.api.key}") String apiKey,
+            @Value("${dart.api.connect-timeout-ms}") long connectTimeoutMs,
+            @Value("${dart.api.read-timeout-ms}") long readTimeoutMs) {
+        this.restClient = DartRestClients.create(baseUrl, connectTimeoutMs, readTimeoutMs);
         this.apiKey = apiKey;
     }
 

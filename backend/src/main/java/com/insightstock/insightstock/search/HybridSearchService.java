@@ -16,6 +16,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -32,6 +34,8 @@ import org.springframework.transaction.annotation.Transactional;
 // 지연 로딩으로 접근하므로 메서드 전체를 읽기 전용 트랜잭션으로 묶어 세션을 유지한다.
 @Service
 public class HybridSearchService {
+
+    private static final Logger log = LoggerFactory.getLogger(HybridSearchService.class);
 
     private final KeywordSearchService keywordSearchService;
     private final VectorSearchService vectorSearchService;
@@ -75,7 +79,16 @@ public class HybridSearchService {
         Map<Long, Chunk> chunkById = chunkRepository.findAllById(fusedIds).stream()
                 .collect(Collectors.toMap(Chunk::getId, chunk -> chunk));
 
+        // Elasticsearch에는 있는데 DB에는 없는 청크 ID가 나올 수 있다(재청킹으로 DB 청크는
+        // 지워졌는데 ES 문서는 아직 남은 경우 등). 그대로 두면 null을 다루다 500이 되므로,
+        // 그 청크만 결과에서 빼고 나머지로 계속 진행한다 - 본문이 없는 청크는 어차피 보여줄 수 없다.
+        List<Long> missingIds = fusedIds.stream().filter(id -> !chunkById.containsKey(id)).toList();
+        if (!missingIds.isEmpty()) {
+            log.warn("검색 인덱스에는 있으나 DB에 없는 청크 {}건을 결과에서 제외: {}", missingIds.size(), missingIds);
+        }
+
         List<RankedChunk> ranked = fused.stream()
+                .filter(rrfScore -> chunkById.containsKey(rrfScore.chunkId()))
                 .map(rrfScore -> toRankedChunk(rrfScore, chunkById.get(rrfScore.chunkId())))
                 .toList();
 

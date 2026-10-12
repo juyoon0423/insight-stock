@@ -1,6 +1,14 @@
 spring:
   application:
     name: insight-stock
+  task:
+    scheduling:
+      pool:
+        # @Scheduled 작업을 돌리는 스레드 수. 지정하지 않으면 Spring 기본값인 1개라, 스케줄러
+        # 하나(예: 원문 수집)가 오래 걸리거나 멈추면 나머지(공시 수집, 색인, 알림 감지)까지
+        # 줄 서서 못 돈다. 스케줄러 클래스가 7개이고 그중 평소 켜두는 것이 4개라 4로 잡았다 -
+        # 서로 기다리지 않게 하는 것이 목적이고, 전부 10분 간격의 가벼운 배치라 더 늘릴 이유는 없다.
+        size: 4
   datasource:
     url: jdbc:postgresql://localhost:5432/insight_stock
     username: ${POSTGRES_USER}
@@ -28,6 +36,13 @@ dart:
   api:
     base-url: https://opendart.fss.or.kr/api
     key: ${DART_API_KEY}
+    # 타임아웃이 없으면 DART가 응답을 안 줄 때 스케줄러 스레드가 무기한 멈춘다. connect 5초는
+    # OpenAI 클라이언트와 같은 값. read 60초: 목록/원문은 보통 수 초 안에 오지만 회사코드
+    # 전체(corpCode.xml ZIP 3.6MB)와 큰 원문 ZIP까지 한 값으로 덮으려고 넉넉히 잡았다 - 실측
+    # 분포가 아니라 "정상 응답을 끊지 않으면서 무기한 대기는 막는" 값이다. 초과하면 그 건만
+    # 실패로 처리되고 스케줄러는 다음 주기에 계속 돈다.
+    connect-timeout-ms: 5000
+    read-timeout-ms: 60000
   collector:
     # 10분마다 오늘 날짜 공시를 재조회. rcept_no 중복 체크로 걸러지므로 재조회해도 안전.
     fixed-delay-ms: 600000
@@ -99,8 +114,15 @@ embedding:
     # 백필 중 429 폭주로 발견 - progress.md 참고).
     min-interval-ms: 5000
     # 그래도 429가 나면(청크가 평균보다 훨씬 클 때 등) 지수 백오프로 재시도.
+    # 이 두 값은 배치(색인) 경로용이다 - 최악의 경우 2+4+8=14초를 기다린다.
     max-retries: 3
     initial-backoff-ms: 2000
+    single:
+      # 질의 1건 임베딩(/search, /answers) 경로용. 사용자가 화면 앞에서 기다리므로 배치 값을
+      # 그대로 쓰면 최악 14초를 세워두게 된다 - 채팅 완성(rag.chat.rate-limit)과 같은 값으로
+      # 맞춰 최악의 추가 대기를 1.5초(500ms -> 1000ms)로 줄였다. 소진하면 429/SEARCH_RATE_LIMITED.
+      max-retries: 2
+      initial-backoff-ms: 500
   collector:
     # 전체 배치 완료(2026-07-22, 5,191건 전부 처리, 실패 0건) - 다시 비활성화 상태로 복귀.
     enabled: false
@@ -177,6 +199,11 @@ rag:
     model: gpt-4o-mini
     # 사실 근거 답변이 목적이라 창의성보다 일관성이 중요 - 낮게 고정.
     temperature: 0.0
+    # 답변 길이 상한(출력 토큰). 지정하지 않으면 모델 한도까지 쓸 수 있어, 모델이 같은 말을
+    # 반복하는 식으로 폭주하면 응답 시간과 비용이 함께 늘어난다. 답변 품질 측정(2026-10-12)에서
+    # 가장 긴 답변이 약 200토큰, 그 전 실측 최대가 293토큰이라 3배 이상 여유를 둔 값이다.
+    # 걸리면 답변은 잘린 채로 나가고 경고 로그가 남는다(finish_reason=length).
+    max-tokens: 1000
     rate-limit:
       # OpenAI가 429(rate limit)를 주면 지수 백오프로 재시도한다(500ms -> 1000ms).
       # 사용자가 화면 앞에서 기다리는 요청이라 임베딩 배치(3회, 2000ms 시작)보다 훨씬

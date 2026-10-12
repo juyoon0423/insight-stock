@@ -55,7 +55,7 @@ class OpenAiEmbeddingClientTest {
         String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
         client = new OpenAiEmbeddingClient(
                 baseUrl, "test-key", 1000, SINGLE_READ_TIMEOUT_MS, BATCH_READ_TIMEOUT_MS,
-                "text-embedding-3-small", 3, 10);
+                "text-embedding-3-small", 3, 10, 1, 10);
     }
 
     @AfterEach
@@ -131,7 +131,20 @@ class OpenAiEmbeddingClientTest {
         responseStatus = 429;
         responseBody = "{\"error\":{\"message\":\"Rate limit reached\",\"code\":\"rate_limit_exceeded\"}}";
 
+        // 테스트 설정: 배치 재시도 3회, 단일(질의) 재시도 1회 - 경로마다 자기 값을 쓰는지 본다.
         assertThatThrownBy(() -> client.embedQuery("질의"))
+                .isInstanceOf(EmbeddingRateLimitException.class)
+                .hasMessageContaining("재시도 1회 소진");
+        // 최초 1회 + 재시도 1회
+        assertThat(callCount.get()).isEqualTo(2);
+    }
+
+    @Test
+    void 배치_경로는_자기_재시도_횟수만큼_더_버틴다() {
+        responseStatus = 429;
+        responseBody = "{\"error\":{\"message\":\"Rate limit reached\",\"code\":\"rate_limit_exceeded\"}}";
+
+        assertThatThrownBy(() -> client.embed(List.of("첫번째", "두번째")))
                 .isInstanceOf(EmbeddingRateLimitException.class)
                 .hasMessageContaining("재시도 3회 소진");
         // 최초 1회 + 재시도 3회

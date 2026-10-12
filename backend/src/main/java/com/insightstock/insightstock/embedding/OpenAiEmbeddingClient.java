@@ -24,8 +24,13 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
     private final RestClient batchRestClient;
     private final RestClient singleRestClient;
     private final String model;
-    private final int maxRetries;
-    private final long initialBackoffMs;
+    // 429 재시도 값도 경로별로 다르다. 배치는 백그라운드라 오래 기다려도 되지만, 질의는 사용자가
+    // 화면 앞에서 기다리므로 채팅 완성(rag.chat.rate-limit)과 같은 수준으로 짧게 잡는다.
+    private final RetryPolicy batchRetry;
+    private final RetryPolicy singleRetry;
+
+    private record RetryPolicy(int maxRetries, long initialBackoffMs) {
+    }
 
     public OpenAiEmbeddingClient(
             @Value("${embedding.api.base-url}") String baseUrl,
@@ -34,13 +39,15 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
             @Value("${embedding.api.single.read-timeout-ms}") long singleReadTimeoutMs,
             @Value("${embedding.api.batch.read-timeout-ms}") long batchReadTimeoutMs,
             @Value("${embedding.model}") String model,
-            @Value("${embedding.rate-limit.max-retries}") int maxRetries,
-            @Value("${embedding.rate-limit.initial-backoff-ms}") long initialBackoffMs) {
+            @Value("${embedding.rate-limit.max-retries}") int batchMaxRetries,
+            @Value("${embedding.rate-limit.initial-backoff-ms}") long batchInitialBackoffMs,
+            @Value("${embedding.rate-limit.single.max-retries}") int singleMaxRetries,
+            @Value("${embedding.rate-limit.single.initial-backoff-ms}") long singleInitialBackoffMs) {
         this.singleRestClient = buildRestClient(baseUrl, apiKey, connectTimeoutMs, singleReadTimeoutMs);
         this.batchRestClient = buildRestClient(baseUrl, apiKey, connectTimeoutMs, batchReadTimeoutMs);
         this.model = model;
-        this.maxRetries = maxRetries;
-        this.initialBackoffMs = initialBackoffMs;
+        this.batchRetry = new RetryPolicy(batchMaxRetries, batchInitialBackoffMs);
+        this.singleRetry = new RetryPolicy(singleMaxRetries, singleInitialBackoffMs);
     }
 
     // 타임아웃을 지정하지 않으면 RestClient는 무기한 기다린다 - OpenAI가 응답을 멈추면
@@ -61,18 +68,18 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
 
     @Override
     public EmbeddingBatchResult embed(List<String> texts) {
-        return embedWith(batchRestClient, texts);
+        return embedWith(batchRestClient, batchRetry, texts);
     }
 
     @Override
     public float[] embedQuery(String text) {
-        return embedWith(singleRestClient, List.of(text)).embeddings().get(0);
+        return embedWith(singleRestClient, singleRetry, List.of(text)).embeddings().get(0);
     }
 
-    private EmbeddingBatchResult embedWith(RestClient restClient, List<String> texts) {
+    private EmbeddingBatchResult embedWith(RestClient restClient, RetryPolicy retry, List<String> texts) {
         OpenAiEmbeddingRequest request = new OpenAiEmbeddingRequest(model, texts);
 
-        OpenAiEmbeddingResponse response = callWithRetry(restClient, request, texts.size());
+        OpenAiEmbeddingResponse response = callWithRetry(restClient, retry, request, texts.size());
 
         if (response == null || response.data() == null) {
             throw new EmbeddingApiException("OpenAI 임베딩 API 응답이 비어있습니다.", null);
@@ -91,8 +98,9 @@ public class OpenAiEmbeddingClient implements EmbeddingClient {
     // 같은 결과라 바로 실패시킨다. EmbeddingService의 sub-batch 사이 딜레이가 대부분의
     // 429를 사전에 막아주므로, 여기 재시도는 그래도 새는 소수 사례를 위한 안전망이다.
     private OpenAiEmbeddingResponse callWithRetry(
-            RestClient restClient, OpenAiEmbeddingRequest request, int textCount) {
-        long backoffMs = initialBackoffMs;
+            RestClient restClient, RetryPolicy retry, OpenAiEmbeddingRequest request, int textCount) {
+        int maxRetries = retry.maxRetries();
+        long backoffMs = retry.initialBackoffMs();
         for (int attempt = 0; ; attempt++) {
             try {
                 return restClient.post()

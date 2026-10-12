@@ -2,6 +2,7 @@ package com.insightstock.insightstock.rag;
 
 import com.insightstock.insightstock.rag.dto.ChatCompletionResult;
 import com.insightstock.insightstock.rag.dto.ChatMessage;
+import com.insightstock.insightstock.rag.dto.OpenAiChatChoice;
 import com.insightstock.insightstock.rag.dto.OpenAiChatRequest;
 import com.insightstock.insightstock.rag.dto.OpenAiChatResponse;
 import com.insightstock.insightstock.rag.dto.RagPrompt;
@@ -23,6 +24,7 @@ public class OpenAiChatCompletionClient implements ChatCompletionClient {
     private final RestClient restClient;
     private final String model;
     private final double temperature;
+    private final int maxTokens;
     private final int maxRetries;
     private final long initialBackoffMs;
 
@@ -33,6 +35,7 @@ public class OpenAiChatCompletionClient implements ChatCompletionClient {
             @Value("${rag.chat.api.read-timeout-ms}") long readTimeoutMs,
             @Value("${rag.chat.model}") String model,
             @Value("${rag.chat.temperature}") double temperature,
+            @Value("${rag.chat.max-tokens}") int maxTokens,
             @Value("${rag.chat.rate-limit.max-retries}") int maxRetries,
             @Value("${rag.chat.rate-limit.initial-backoff-ms}") long initialBackoffMs) {
         // 타임아웃을 지정하지 않으면 RestClient는 무기한 기다린다 - OpenAI가 느려지거나 응답을
@@ -50,6 +53,7 @@ public class OpenAiChatCompletionClient implements ChatCompletionClient {
                 .build();
         this.model = model;
         this.temperature = temperature;
+        this.maxTokens = maxTokens;
         this.maxRetries = maxRetries;
         this.initialBackoffMs = initialBackoffMs;
     }
@@ -59,7 +63,8 @@ public class OpenAiChatCompletionClient implements ChatCompletionClient {
         OpenAiChatRequest request = new OpenAiChatRequest(
                 model,
                 List.of(ChatMessage.system(prompt.systemPrompt()), ChatMessage.user(prompt.userPrompt())),
-                temperature);
+                temperature,
+                maxTokens);
 
         OpenAiChatResponse response = callWithRetry(request);
 
@@ -67,7 +72,25 @@ public class OpenAiChatCompletionClient implements ChatCompletionClient {
             throw new RagApiException("OpenAI 채팅 완성 API 응답이 비어있습니다.", null);
         }
 
-        String content = response.choices().get(0).message().content();
+        // 여기서부터는 "HTTP 200인데 쓸 수 없는 응답"을 걸러낸다. 그대로 넘기면 뒤에서 null을
+        // 다루다 NullPointerException이 나 원인을 알 수 없는 500이 된다 - LLM 쪽 문제이므로
+        // RagApiException(-> 502/LLM_UNAVAILABLE)으로 분명하게 실패시킨다.
+        OpenAiChatChoice choice = response.choices().get(0);
+        String content = choice.message() == null ? null : choice.message().content();
+        if ("content_filter".equals(choice.finishReason())) {
+            throw new RagApiException("OpenAI 채팅 완성 API가 콘텐츠 필터로 답변을 중단했습니다.", null);
+        }
+        if (content == null || content.isBlank()) {
+            throw new RagApiException(
+                    "OpenAI 채팅 완성 API 응답에 답변 본문이 없습니다 (finish_reason=%s)".formatted(choice.finishReason()),
+                    null);
+        }
+        // max_tokens에 걸려 잘린 답변은 버리지 않고 내보낸다(앞부분은 유효한 답변이다). 다만
+        // 마지막 문장과 그 인용이 잘렸을 수 있으므로 로그로 남겨 상한을 조정할 근거로 쓴다.
+        if ("length".equals(choice.finishReason())) {
+            log.warn("채팅 완성 답변이 max_tokens({})에 걸려 잘렸습니다.", maxTokens);
+        }
+
         int promptTokens = usagePromptTokens(response);
         int completionTokens = usageCompletionTokens(response);
 

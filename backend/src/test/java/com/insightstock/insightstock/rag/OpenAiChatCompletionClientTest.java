@@ -43,6 +43,7 @@ class OpenAiChatCompletionClientTest {
     private HttpServer server;
     private final Deque<StubResponse> scripted = new ArrayDeque<>();
     private final AtomicInteger callCount = new AtomicInteger();
+    private volatile String lastRequestBody;
     private OpenAiChatCompletionClient client;
 
     @BeforeEach
@@ -50,7 +51,7 @@ class OpenAiChatCompletionClientTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/chat/completions", exchange -> {
             callCount.incrementAndGet();
-            exchange.getRequestBody().readAllBytes();
+            lastRequestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             // 준비한 응답을 순서대로 내보내고, 마지막 응답은 계속 반복한다.
             StubResponse response = scripted.size() > 1 ? scripted.poll() : scripted.peek();
             sleepQuietly(response.delayMs());
@@ -65,7 +66,7 @@ class OpenAiChatCompletionClientTest {
         String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
         // 테스트가 느려지지 않도록 백오프는 10ms로 시작(10ms -> 20ms).
         client = new OpenAiChatCompletionClient(
-                baseUrl, "test-key", 1000, READ_TIMEOUT_MS, "gpt-4o-mini", 0.0, MAX_RETRIES, 10);
+                baseUrl, "test-key", 1000, READ_TIMEOUT_MS, "gpt-4o-mini", 0.0, 1000, MAX_RETRIES, 10);
     }
 
     @AfterEach
@@ -83,6 +84,48 @@ class OpenAiChatCompletionClientTest {
         assertThat(result.promptTokens()).isEqualTo(120);
         assertThat(result.completionTokens()).isEqualTo(30);
         assertThat(callCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void 요청에_max_tokens를_실어_보낸다() {
+        scripted.add(new StubResponse(200, OK_BODY));
+
+        client.complete(prompt());
+
+        assertThat(lastRequestBody).contains("\"max_tokens\":1000");
+    }
+
+    @Test
+    void 답변_본문이_null이면_NPE가_아니라_RagApiException으로_실패한다() {
+        scripted.add(new StubResponse(200, """
+                {"choices":[{"message":{"role":"assistant","content":null},"finish_reason":"stop"}],
+                 "usage":{"prompt_tokens":120,"completion_tokens":0}}"""));
+
+        assertThatThrownBy(() -> client.complete(prompt()))
+                .isInstanceOf(RagApiException.class)
+                .hasMessageContaining("답변 본문이 없습니다");
+    }
+
+    @Test
+    void 콘텐츠_필터로_중단된_응답은_RagApiException으로_실패한다() {
+        scripted.add(new StubResponse(200, """
+                {"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"content_filter"}],
+                 "usage":{"prompt_tokens":120,"completion_tokens":0}}"""));
+
+        assertThatThrownBy(() -> client.complete(prompt()))
+                .isInstanceOf(RagApiException.class)
+                .hasMessageContaining("콘텐츠 필터");
+    }
+
+    @Test
+    void max_tokens에_걸려_잘린_답변은_버리지_않고_그대로_반환한다() {
+        scripted.add(new StubResponse(200, """
+                {"choices":[{"message":{"role":"assistant","content":"매출은 증가했으며"},"finish_reason":"length"}],
+                 "usage":{"prompt_tokens":120,"completion_tokens":1000}}"""));
+
+        ChatCompletionResult result = client.complete(prompt());
+
+        assertThat(result.content()).isEqualTo("매출은 증가했으며");
     }
 
     @Test
