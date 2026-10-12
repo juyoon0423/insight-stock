@@ -7,6 +7,7 @@ import com.insightstock.insightstock.search.dto.RankedChunk;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,7 +39,13 @@ public class SearchController {
 
     @GetMapping
     public SearchResponse search(
-            @RequestParam("q") @NotBlank(message = "검색어를 입력해주세요.") String query,
+            // 길이 상한은 /answers의 query와 같은 값 - 질의 전체가 임베딩 API로 그대로 넘어간다.
+            // topK 상한 50은 /answers(20)와 달리 그대로 둔다: LLM을 거치지 않아 TPM에 영향이
+            // 없고, 프론트 검색 화면이 11~20위 후보까지 보여주려고 20을 요청한다.
+            @RequestParam("q")
+                    @NotBlank(message = "검색어를 입력해주세요.")
+                    @Size(max = 500, message = "검색어는 500자 이하로 입력해주세요.")
+                    String query,
             @RequestParam(value = "topK", required = false)
                     @Min(value = 1, message = "topK는 1 이상이어야 합니다.")
                     @Max(value = 50, message = "topK는 50 이하여야 합니다.")

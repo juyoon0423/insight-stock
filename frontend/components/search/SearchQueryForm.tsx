@@ -45,6 +45,8 @@ export default function SearchQueryForm({ onSubmit, isLoading }: SearchQueryForm
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          // 백엔드 검증(검색어 500자 이하)과 같은 값 - 넘겨서 400을 받기 전에 입력 단계에서 막는다.
+          maxLength={500}
           placeholder="검색어를 입력해보세요 (예: 신영증권 증권발행실적보고서)"
           disabled={isLoading}
           className="w-full flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500"
