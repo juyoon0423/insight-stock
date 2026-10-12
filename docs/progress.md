@@ -128,8 +128,9 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   브라우저(Playwright) 검증 완료. `notification.collector.enabled: false`
   (기본 비활성화, 다른 collector와 동일 관례) 유지 중.
 - **AWS 배포(1차)도 완전히 끝났고 다시 조사할 필요 없음**: EC2
-  `i-00bdd2e8b984f5d0f`(t3.small, 2026-10-12 세션 종료 시점 기준 running -
-  사용자 확인 후 켜둠, Elastic IP 연결됨)에 docker-compose(Postgres+
+  `i-00bdd2e8b984f5d0f`(2026-10-12 데이터 이전 세션 종료 시점 기준
+  t3.small / stopped - 쓸 때는 t3.medium으로 올려서 켠다, Elastic IP
+  연결됨, EBS 20GB)에 docker-compose(Postgres+
   Elasticsearch)+jar 직접 실행, Nginx가 80→(현재 라이브 포트) 리버스 프록시
   (14절 upstream 구조로 전환됨, 8080/8081/8082 직접 접근은 보안 그룹에서
   막혀 있어 외부 비공개), Vercel `https://frontend-steel-omega-
