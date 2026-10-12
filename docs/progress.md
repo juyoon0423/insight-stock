@@ -22,7 +22,9 @@
   완료**(EC2 t3.small에 docker-compose+jar 직접 실행, Nginx로 80→(현재
   라이브 포트, upstream 구조 — 무중단 배포 세션에서 전환, 아래 "무중단
   배포" 항목 참고) 리버스 프록시, Vercel에 프론트 배포, HTTPS 프론트→HTTP
-  백엔드 간 Mixed Content 차단을 발견해 Next.js rewrite 프록시로 해결,
+  백엔드 간 Mixed Content 차단을 발견해 Next.js rewrite 프록시로 임시
+  해결 → 2026-10-12에 도메인(`insightstock.site`)+TLS를 붙이고 프록시를
+  제거해 프론트가 백엔드를 HTTPS로 직접 호출하도록 전환,
   회원가입→로그인→
   질문답변→관심회사 등록→알림 배지까지 실제 브라우저로 끝까지 확인),
   **무중단 배포(ShedLock + Blue-Green) — 수동 절차 기준 실물 검증까지
@@ -71,12 +73,13 @@
 > 할 예정** (Elastic IP 적용 + 리질리언스 수정 + 도메인/TLS 전부 반영된
 > 버전으로). 현재 EC2의 `app.jar`는 2026-07-31 빌드라 그 이후 커밋된
 > 검색 스레드풀/HikariCP 수정(`193e7c5`)이 배포본에 아직 들어 있지 않다.
-> 오늘 이어서 리질리언스 버그 수정(`OpenAiChatCompletionClient` 재시도,
-> `GlobalExceptionHandler` 429/502 분리)과 도메인+TLS 적용까지 할
-> 계획이므로, 같은 배포 절차를 하루에 여러 번 반복하지 않도록 **중간에
-> 재배포하지 말고** 백엔드 코드 변경을 전부 끝낸 뒤 한 번만 새로 빌드해
-> 배포한다. 그때 `frontend/next.config.ts`의 `BACKEND_ORIGIN` 기본값에
-> 남아 있는 옛 임시 IP도 같이 정리한다. 이 메모는 재배포가 끝나면 지울 것.
+> 같은 배포 절차를 하루에 여러 번 반복하지 않도록 **중간에 재배포하지
+> 말고** 백엔드 코드 변경을 전부 끝낸 뒤 한 번만 새로 빌드해 배포한다.
+> 오늘 진행 상황: Elastic IP 적용 **완료**, 도메인+TLS 적용 **완료**
+> (프론트는 이미 재배포됨 - `next.config.ts`의 rewrite와 옛 IP 기본값도
+> 이때 같이 제거됨), 리질리언스 버그 수정(`OpenAiChatCompletionClient`
+> 재시도, `GlobalExceptionHandler` 429/502 분리) **남음** → 그 뒤 백엔드
+> 재배포. 인스턴스는 그때까지 켜둔다. 이 메모는 재배포가 끝나면 지울 것.
 
 **4단계(알림) → AWS 배포(EC2+Nginx+Vercel) → 무중단 배포(ShedLock+
 Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동화) →
@@ -104,8 +107,11 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   Elasticsearch)+jar 직접 실행, Nginx가 80→(현재 라이브 포트) 리버스 프록시
   (14절 upstream 구조로 전환됨, 8080/8081/8082 직접 접근은 보안 그룹에서
   막혀 있어 외부 비공개), Vercel `https://frontend-steel-omega-
-  0zye89ut4w.vercel.app`에 프론트 배포, Next.js rewrite로 Vercel 서버가
-  백엔드를 대신 호출하는 프록시(Mixed Content 우회) 적용. 상세 절차/근거는
+  0zye89ut4w.vercel.app`에 프론트 배포. **2026-10-12부터 백엔드 주소는
+  `https://insightstock.site`(도메인+Let's Encrypt TLS)이고 프론트가
+  이 주소를 직접 호출한다** - 그 전까지 쓰던 Next.js rewrite 프록시
+  (Mixed Content 우회)는 제거됐다(deploy.md 9절/10절). IP로 직접
+  호출하면 이제 404이므로 헬스체크는 도메인으로 할 것. 상세 절차/근거는
   [docs/deploy.md](./deploy.md) 전체와 progress-log.md 8~9절 참고.
   **Elastic IP 적용(2026-10-12)으로 퍼블릭 IP가 고정됐다** - 인스턴스를
   껐다 켜도 IP가 그대로라 `BACKEND_ORIGIN` 갱신/Vercel 재배포는 더 이상
@@ -202,8 +208,8 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   세션에서 CD를 의도적으로 범위 밖에 뒀다(EC2를 평소 꺼두는 운영 방침과
   "push마다 자동 배포"가 안 맞음). 만약 나중에 EC2를 상시 켜두는 쪽으로
   운영 방침이 바뀌거나 도메인·TLS가 갖춰지면, 그때 CD 도입을 다시 논의할
-  것(Elastic IP는 2026-10-12에 적용 완료 - 배포 대상 주소가 고정됐으므로
-  CD의 전제 조건 하나는 충족됨).
+  것(Elastic IP와 도메인·TLS는 2026-10-12에 적용 완료 - 남은 전제는
+  EC2 상시 운영 여부뿐).
 - **청킹/임베딩/corpCode 동기화 스케줄러를 나중에 활성화할 때 `@SchedulerLock`
   추가를 빠뜨리지 말 것** — 무중단 배포 도입(2026-07-31)으로 공시 수집/원문
   수집/색인/알림 감지 4개 스케줄러에는 ShedLock을 적용했지만, 현재
@@ -264,22 +270,36 @@ Blue-Green, 수동 절차 검증 완료) → CI(GitHub Actions 테스트 자동�
   나간다(월 약 $3.6). 이전에는 꺼두면 IP 비용이 0이었으니 평소 꺼두는
   운영 방침과 상충하지만, 재기동마다 반복하던 수작업이 사라지는 값으로
   받아들였다. 장기간 안 쓸 거면 12절의 해제 절차로 되돌릴 수 있다.
-  **후속 정리 후보**: `frontend/next.config.ts`의 `BACKEND_ORIGIN` 기본값
-  (fallback)에 옛 임시 IP가 그대로 남아 있다 - Vercel 환경변수가 우선하므로
-  동작에는 영향 없지만 죽은 주소다. 2026-10-12 세션 마지막의 일괄
-  재배포 때 같이 정리하기로 했다(위 "다음 세션 시작점" 메모 참고).
-- **도메인/TLS 미적용 — 시연 직전 진행 예정** — 현재 백엔드는 HTTP(IP
-  기반)만 서비스한다. 도메인을 구매하고 Let's Encrypt로 TLS를 붙이는
-  작업은 의도적으로 미뤄뒀다(지금 사도 시연 전까지 미리 켜둘 필요는 없고,
-  프론트는 아래 Vercel 프록시로 이미 우회돼 있어 급하지 않음).
-- **Vercel rewrite 프록시는 임시 우회 — TLS 적용 시 제거 예정** — Vercel
-  프론트(HTTPS)가 EC2 백엔드(HTTP)를 직접 호출하면 브라우저 Mixed Content
-  정책에 무조건 차단당한다는 걸 실물 브라우저 검증에서 발견해서(위 "완성된
-  기능" 참고, 상세는 progress-log.md 9절), `frontend/next.config.ts`의
-  `rewrites()`로 Vercel 서버가 대신 백엔드를 호출하도록 우회해뒀다. 위
-  도메인/TLS 항목이 처리되면 이 rewrite를 제거하고
-  `NEXT_PUBLIC_API_BASE_URL`을 백엔드 도메인으로 직접 가리키는 원래
-  방식으로 되돌리면 된다.
+  `frontend/next.config.ts`에 남아 있던 옛 임시 IP 기본값은 같은 날
+  rewrite를 제거하면서 함께 사라졌다. 도메인 적용 이후 Elastic IP의
+  역할은 DNS A 레코드가 가리키는 주소를 고정하는 것이다.
+- **~~도메인/TLS 미적용~~ — 해결됨(2026-10-12, `insightstock.site`)** —
+  Namecheap에서 도메인을 구매해 A 레코드를 Elastic IP로 연결하고,
+  certbot(nginx 플러그인)으로 Let's Encrypt 인증서를 발급했다. Nginx
+  upstream 구조(14절)는 그대로 유지됐고 80→443 리다이렉트가 적용됐다.
+  `https://insightstock.site/actuator/health` → `{"status":"UP"}` 확인.
+  **알아둘 것**: (1) 인증서는 90일짜리(만료 2027-01-10)이고 자동 갱신
+  타이머는 켜뒀지만 인스턴스가 꺼져 있으면 돌지 않는다 - 오래 꺼뒀다
+  켜면 `sudo certbot renew`로 확인. (2) IP로 직접 호출하면 이제 404다.
+  상세는 docs/deploy.md 9절.
+- **~~Vercel rewrite 프록시는 임시 우회~~ — 해결됨(2026-10-12), 제거
+  완료** — `frontend/next.config.ts`의 `rewrites()`를 지우고 Vercel의
+  `NEXT_PUBLIC_API_BASE_URL`을 `https://insightstock.site`로 바꿨다
+  (`BACKEND_ORIGIN`은 삭제). Playwright로 프로덕션에서 회원가입→로그인→
+  검색을 돌려 모든 API 호출이 `insightstock.site`로 직접 나가는 것을
+  확인했다(docs/deploy.md 10절). 이제 실제로 CORS 프리플라이트가
+  발생하므로 `CORS_ALLOWED_ORIGINS`와 `WebConfig` 허용 메서드가 프로덕션
+  동작에 직접 관여한다(11절).
+- **EC2 DB에 청크가 0건 — 배포 환경에서는 검색/답변이 항상 빈 결과**
+  — 2026-10-12 TLS 검증 중 발견. 프로덕션 검색이 200인데 결과가 0건이라
+  EC2를 직접 조회해보니 `companies` 279 / `disclosures` 604 / `chunks`
+  0 / ES `chunks` 인덱스 문서 0건이었다. 이 문서 맨 위의 데이터 규모
+  (청크 173,035건 등)는 로컬 DB 기준이고 EC2에는 옮겨진 적이 없는
+  것으로 보인다(이관 기록을 문서에서 찾지 못함 - 원래부터 비어 있었는지
+  중간에 비워졌는지는 확인 안 됨). 연결/TLS 문제가 아니라 데이터 문제다.
+  **시연(2026-11) 전에 반드시 해결해야 한다** - 로컬 DB 덤프를 EC2로
+  옮기고 ES를 재색인하는 방법 등을 비교해 정할 것. t3.small 디스크/메모리로
+  17만 청크+벡터를 감당할 수 있는지도 같이 확인 필요.
 - **`WebConfig` CORS 허용 메서드 수동 관리 구조 — 같은 종류의 버그가 두 번
   재발함** — 3단계 WatchList 때 `DELETE` 누락, 이번 4단계 알림 때 `PATCH`
   누락, 둘 다 새 HTTP 메서드를 쓰는 API를 추가할 때 `setAllowedMethods(...)`

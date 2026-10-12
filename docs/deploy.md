@@ -306,14 +306,133 @@ aws ec2 revoke-security-group-ingress --region ap-northeast-2 \
 않으므로**(8절의 `nohup java -jar` 명령을 EC2 재부팅/재기동마다 다시 실행해야 함) 이 부분은
 그대로 남아있는 제약이다.
 
-검증:
+검증 (아래 "HTTPS 적용" 이후로는 IP가 아니라 도메인으로 확인한다):
 
 ```bash
-curl http://<PUBLIC_IP>/actuator/health        # 80번, 정상 응답 기대
-curl -m 8 http://<PUBLIC_IP>:8080/actuator/health   # 8080번, 타임아웃/거부 기대
+curl https://insightstock.site/actuator/health        # 443번, {"status":"UP"} 기대
+curl -m 8 http://<PUBLIC_IP>:8082/actuator/health     # 백엔드 포트 직접, 타임아웃/거부 기대
 ```
 
-## 10. 프론트엔드(Vercel) 배포와 Mixed Content 문제
+### HTTPS 적용 — 도메인 + Let's Encrypt (2026-10-12 적용)
+
+도메인 `insightstock.site`(Namecheap에서 구매)를 Elastic IP에 연결하고 Let's Encrypt
+인증서를 붙였다. 이제 외부에서 보는 백엔드 주소는 `https://insightstock.site`다.
+
+**1) DNS** — Namecheap은 Route53이 아니라 CLI로 자동화할 수 없어 웹 콘솔(Domain List →
+Manage → Advanced DNS)에서 직접 등록한다. A 레코드 1개(Host `@`, Value = Elastic IP)면
+충분하다. 새 도메인에 기본으로 들어있는 파킹용 레코드(`@` URL Redirect, `www` CNAME)는
+지운다. `www`는 등록하지 않았다 — 이 도메인은 API 주소로만 쓰이고 사용자가 보는 프론트는
+Vercel 주소라 `www`로 들어올 일이 없다.
+
+```bash
+dig +short @8.8.8.8 insightstock.site A    # Elastic IP가 나오면 전파 완료 (실측: 등록 후 수 분 내)
+```
+
+**2) certbot 설치 및 발급**
+
+```bash
+sudo dnf install -y certbot python3-certbot-nginx
+
+# 중요: 발급 전에 server_name을 도메인으로 바꿔둔다. 기존 설정은 `server_name _;`라서
+# certbot의 nginx 플러그인이 인증서를 설치할 server 블록을 찾지 못한다.
+sudo sed -i "s/server_name _;/server_name insightstock.site;/" /etc/nginx/conf.d/insightstock-backend.conf
+sudo nginx -t && sudo systemctl reload nginx
+
+sudo certbot --nginx -d insightstock.site --non-interactive --agree-tos -m <EMAIL> --redirect
+```
+
+보안 그룹의 443은 1절에서 이미 열어둔 상태라 추가 작업이 없었다.
+
+**3) 결과 설정** — certbot이 14절의 upstream 블록은 건드리지 않고 server 블록만 고쳤다.
+blue-green 전환 때 바꾸는 곳은 여전히 `upstream backend` 안의 포트 하나뿐이다.
+
+```nginx
+# /etc/nginx/conf.d/insightstock-backend.conf (2026-10-12 기준)
+upstream backend {
+    server 127.0.0.1:8082;
+}
+
+server {
+    server_name insightstock.site;
+
+    location / {
+        proxy_pass http://backend;
+        # ... proxy_set_header 4줄은 이전과 동일
+    }
+
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/insightstock.site/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/insightstock.site/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+}
+
+server {
+    if ($host = insightstock.site) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+    listen 80 default_server;
+    server_name insightstock.site;
+    return 404; # managed by Certbot
+}
+```
+
+TLS 적용 직전 설정은 EC2의 `/etc/nginx/insightstock-backend.conf.pre-tls-2026-10-12`에
+백업해뒀다.
+
+**4) 자동 갱신** — Amazon Linux 2023의 certbot 패키지는 `certbot-renew.timer`를 설치만 하고
+**켜지는 않는다**(설치 직후 `disabled`/`inactive`였다). 직접 켜야 한다:
+
+```bash
+sudo systemctl enable --now certbot-renew.timer
+sudo certbot renew --dry-run     # 갱신 리허설 - 실측 결과 success
+```
+
+인증서 만료일은 2027-01-10(90일). 타이머가 켜져 있어도 **인스턴스가 꺼져 있으면 갱신이
+돌지 않는다** — 평소 꺼두는 운영 방침에서는, 오래 꺼뒀다 켠 직후 `sudo certbot renew`를
+한 번 직접 실행해 만료 여부를 확인할 것. 갱신에는 80번 포트와 DNS가 살아 있어야 한다.
+
+**5) 검증 (2026-10-12 실측)**
+
+- `curl https://insightstock.site/actuator/health` → `{"status":"UP"}`
+- `curl -I http://insightstock.site/actuator/health` → `301`, `Location: https://insightstock.site/...`
+- 인증서: `CN=insightstock.site`, 발급자 Let's Encrypt, 2026-10-12 ~ 2027-01-10
+
+> **주의 — IP로 직접 호출하면 이제 404다.** certbot이 80번 블록을 "도메인이면 301,
+> 그 외는 404"로 바꿨기 때문에 `curl http://<IP>/actuator/health`는 더 이상 동작하지
+> 않는다. 실제로 적용 직후, 당시 `http://<IP>`로 프록시하던 Vercel 프론트의 API 호출이
+> 전부 404가 됐다(프론트를 도메인 직접 호출로 바꿔 해소 — 10절). 이 문서의 다른 절에 남은
+> `http://<PUBLIC_IP>/...` 형태의 헬스체크는 `https://insightstock.site/...`로 읽을 것.
+
+## 10. 프론트엔드(Vercel) 배포 — Vercel rewrite 프록시는 제거됨(도메인+TLS 적용 완료, 2026-10-12)
+
+### 현재 구성 (2026-10-12~)
+
+브라우저가 백엔드를 **HTTPS로 직접** 호출한다. 프록시는 없다.
+
+- `frontend/next.config.ts`: `rewrites()` 제거(빈 설정).
+- Vercel 환경변수(Production): `NEXT_PUBLIC_API_BASE_URL` = `https://insightstock.site`
+  하나뿐. `BACKEND_ORIGIN`은 쓰는 곳이 없어져 삭제했다.
+
+```bash
+npx vercel env rm NEXT_PUBLIC_API_BASE_URL production --yes
+printf 'https://insightstock.site' | npx vercel env add NEXT_PUBLIC_API_BASE_URL production
+npx vercel env rm BACKEND_ORIGIN production --yes
+npx vercel --prod --yes
+```
+
+검증(2026-10-12, Playwright로 프로덕션 URL에서 실제 브라우저 실행):
+
+- 회원가입(`POST /auth/signup` 201) → 로그인(`POST /auth/login` 200) → 검색
+  (`GET /search` 200), 그 사이 `auth/refresh`·`notifications/unread-count`까지 **모든 API
+  호출의 origin이 `https://insightstock.site`** 였고, 실패한 요청과 콘솔 에러는 0건.
+- 예전 프록시 경로(`https://<Vercel URL>/api/v1/...`)는 이제 404 — 프록시를 거치지 않는다는
+  반대 방향 증거.
+- 단, 검색 결과 자체는 0건이었다. 연결 문제가 아니라 EC2 DB에 청크가 0건(ES 인덱스도
+  비어 있음)이기 때문 — `docs/progress.md` "다음 세션 논의거리" 참고.
+
+아래는 프록시를 쓰게 됐던 배경과 당시 구성의 기록이다(지금은 적용되지 않는다).
 
 ### 배포 절차
 
@@ -339,7 +458,7 @@ fetch`로 실패**했다 — curl로는 같은 요청이 정상 응답(201)했�
 Vercel이 HTTPS를 강제하는 이상 피할 수 없는 문제이고, "지금은 HTTP만, TLS는 시연 직전
 도메인 구매 후"라는 원래 계획으로는 실제 방문자 브라우저에서 절대 동작하지 않는다.
 
-### 해결: Next.js rewrite를 이용한 서버사이드 프록시
+### (과거) 임시 해결: Next.js rewrite를 이용한 서버사이드 프록시 — 2026-07-28 ~ 2026-10-12
 
 브라우저가 아니라 **Vercel 서버 자신이 백엔드를 호출**하도록 바꿨다 — 브라우저 입장에서는
 항상 같은 origin(HTTPS)만 보고, "브라우저 → HTTP 백엔드" 구간 자체가 사라진다.
@@ -381,9 +500,11 @@ npx vercel --prod
 검색 + LLM 호출)는 웜업 상태 0.4~0.8초, 콜드스타트(백엔드 재시작 직후 첫 호출)도 4.1초로
 10초에 충분히 여유가 있어 문제없음을 확인했다(2026-07-28 실측).
 
-**시연 직전 도메인+TLS를 붙이면**: 이 rewrite 우회는 더 이상 필요 없다. `next.config.ts`의
-`rewrites()`를 제거하고 `NEXT_PUBLIC_API_BASE_URL`을 다시 백엔드의 `https://<도메인>`으로
-직접 가리키게 바꾸면 된다(그때는 진짜 HTTPS끼리 통신이라 Mixed Content 문제 자체가 없음).
+**도메인+TLS 적용으로 이 우회는 제거됐다(2026-10-12)**: 계획대로 `next.config.ts`의
+`rewrites()`를 지우고 `NEXT_PUBLIC_API_BASE_URL`을 `https://insightstock.site`로 바꿨다.
+진짜 HTTPS끼리 통신이라 Mixed Content 문제 자체가 없다. 프록시가 사라지면서 Vercel
+Serverless Function의 실행 시간 제한(위 "타임아웃 관련 확인")도 더 이상 API 호출에 걸리지
+않는다.
 
 ## 11. CORS 설정
 
@@ -391,12 +512,38 @@ npx vercel --prod
 로 외부화되어 있다 — `.env`(로컬은 미설정 시 localhost:3000 기본값, 배포 EC2는
 `.env`에 `CORS_ALLOWED_ORIGINS=https://<Vercel 프로덕션 URL>` 추가) 로 값을 넣는다.
 
-10절의 Vercel rewrite 프록시를 쓰는 한, 브라우저는 항상 같은 origin으로만 호출하므로
-CORS 프리플라이트 자체가 발생하지 않아 이 값이 실제로 검증 경로에 관여하지는 않는다.
-다만 향후 프론트가 백엔드를 직접(도메인+TLS로) 호출하는 방식으로 되돌아갈 경우를 대비해
-값은 계속 맞춰둔다.
+**2026-10-12부터는 실제로 CORS 프리플라이트가 발생하므로 이 값이 검증 경로에 실제로
+관여한다.** 프론트(`https://<Vercel URL>`)와 백엔드(`https://insightstock.site`)의 origin이
+다르기 때문에, 브라우저는 `Content-Type: application/json`이나 `Authorization` 헤더가 붙은
+요청 전에 `OPTIONS` 프리플라이트를 보내고, 백엔드가 이 origin을 허용해야만 본 요청이
+나간다. (그 전까지는 Vercel rewrite 프록시 덕에 브라우저가 같은 origin으로만 호출해서
+프리플라이트 자체가 없었다.)
+
+따라서 **Vercel 프로덕션 URL이 바뀌거나 커스텀 프론트 도메인을 붙이면 EC2 `.env`의
+`CORS_ALLOWED_ORIGINS`를 반드시 같이 고치고 백엔드를 재시작**해야 한다 — 안 그러면
+curl로는 멀쩡한데 브라우저에서만 전부 실패한다. 새 HTTP 메서드를 쓰는 API를 추가할 때
+`WebConfig`의 허용 메서드 갱신을 빠뜨리는 문제(progress.md 참고)도 이제 프로덕션에서
+바로 드러난다.
+
+실측(2026-10-12, EC2 `.env` 값은 Vercel 프로덕션 URL 그대로였고 수정 불필요):
+
+```bash
+curl -s -o /dev/null -D - -X OPTIONS https://insightstock.site/api/v1/auth/login \
+  -H "Origin: https://<Vercel 프로덕션 URL>" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: content-type,authorization"
+# → 200, Access-Control-Allow-Origin: <그 origin>, Allow-Methods: GET,POST,DELETE,PATCH
+#   (GET/PATCH/DELETE로 바꿔도 동일)
+# 허용하지 않은 origin(예: https://evil.example.com)으로 보내면 → 403, 허용 헤더 없음
+```
 
 ## 12. Elastic IP — 고정 IP 적용 (2026-10-12 적용)
+
+> **같은 날 이어서 도메인+TLS를 적용했다(9절).** 그 뒤로 Vercel은 IP가 아니라
+> `https://insightstock.site`를 가리키고 `BACKEND_ORIGIN` 환경변수는 삭제됐다. 아래에서
+> `BACKEND_ORIGIN`을 다루는 부분은 Elastic IP 적용 시점의 기록이다. 지금 Elastic IP의
+> 역할은 "DNS A 레코드가 가리키는 주소를 고정하는 것"이고, **IP가 실제로 바뀌게 되면
+> 할 일은 Vercel 재배포가 아니라 Namecheap의 A 레코드 수정**이다.
 
 **Elastic IP 적용 이후로는 IP가 고정되므로, 인스턴스를 껐다 켤 때마다 Vercel의
 `BACKEND_ORIGIN`을 갱신하고 재배포하던 절차는 더 이상 필요 없다.**
@@ -655,8 +802,10 @@ t3.small엔 스왑도 없어서(`Swap: 0B`) 극심한 메모리 압박이 sshd �
 - 백엔드가 jar 직접 실행 방식이라 EC2 재부팅 시 자동 기동되지 않는다 — systemd 서비스 등록
   또는 Docker 이미지화가 다음 단계 후보. 수동으로 띄울 때는 Elasticsearch가 healthy가 된
   뒤에 띄워야 한다(7절 주의 1) — systemd로 옮길 때도 이 기동 순서 의존성을 반영할 것.
-- Vercel rewrite 프록시는 임시 우회다 — 시연 직전 도메인 구매 + Let's Encrypt로 백엔드에
-  진짜 TLS를 붙이면 제거하고 직접 호출로 되돌린다(10절 참고).
+- ~~Vercel rewrite 프록시는 임시 우회다~~ — **해결됨(2026-10-12).** `insightstock.site` +
+  Let's Encrypt로 백엔드에 TLS를 붙이고 프록시를 제거했다(9절, 10절).
+- Let's Encrypt 인증서는 90일짜리다(현재 만료 2027-01-10). 자동 갱신 타이머는 켜뒀지만
+  인스턴스가 꺼져 있는 동안은 돌지 않는다 — 오래 꺼뒀다 켜면 `sudo certbot renew`로 확인(9절).
 - **무중단 배포(Blue-Green) — 수동 절차는 검증 완료(13~17절), 자동화는 다음 단계.**
   이번 세션은 의도적으로 스크립트 없이 손으로 진행했다(이해/검증이 먼저, 자동화는 별도
   작업으로 미룸). 15절의 수동 절차를 스크립트 하나로 묶는 게 다음 후보.
