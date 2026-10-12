@@ -834,6 +834,25 @@ curl https://insightstock.site/actuator/health     # {"status":"UP"}
 
 ### 재배포 기록
 
+- **2026-10-12 2차 재배포 완료** (커밋 `7500c5e` 기준 빌드, t3.medium). 같은 날 1차(`b8f36a3`)
+  이후의 변경을 전부 올렸다: 검색 경로 임베딩 실패의 응답 코드 정상화(500 → 502 / 429 분리),
+  인용 번호 `citedNumbers`, 공개 API 입력 상한(`query`·`q` 500자, `/answers` `topK` 20, 비밀번호
+  72바이트), 잘못된 요청의 4xx 매핑, 답변 구조화 로그(`ANSWER_LOG`).
+  검증(전부 `https://insightstock.site`에서 실측): Flyway 7개 마이그레이션 검증 통과, 헬스체크
+  `UP`, `/search` 200(10건), `/answers` 200(출처·`citedNumbers` 포함), 깨진 JSON → 400
+  `MALFORMED_REQUEST`, `topK=21`·501자 질의·`topK=abc` → 400 `VALIDATION_ERROR`, `text/plain` →
+  415, 기동 로그에 ERROR 0건(WARN은 기동 시 표준 경고 2건뿐). `/answers` 호출마다 `app.log`에
+  `ANSWER_LOG` 한 줄이 남는 것도 확인했다(`model=gpt-4o-mini`, `searchMs` 0.8~2.0초, `llmMs`
+  0.9~1.8초, 입력 5,500~6,800토큰). 새 설정 키 `rag.answer-log.include-query`는 기본값 없는
+  `@Value`라 기동에 성공한 것 자체가 로딩의 증거이고, 로그에 `query` 필드가 실제로 찍혔다.
+  답변 품질 측정 질의 3개(Q7 현대모비스 → 거절, Q9 코아스 → 2,132원/2029년 10월 23일 인용
+  [6][8], N3 더블유게임즈 → 719,897백만원 인용 [1])는 로컬 측정과 같은 결과였다.
+  이전 jar는 `~/insight-stock/app-prev-1012.jar`, 이전 로그는 `app-before-redeploy-1012.log`.
+  **같은 날 프론트도 재배포했다**(`npx vercel --prod --yes`, 백엔드 다음에). Vercel은 Git 연동
+  자동 배포가 아니라서 push만으로는 반영되지 않는다 - 직전 프로덕션 배포가 7시간 전 것이었고
+  번들에 `citedNumbers`가 없었다. 재배포 후 프로덕션 번들에서 `citedNumbers`와 `maxLength:500`을
+  확인했고, 실제 브라우저에서 답변의 원본 인용 [6][8]이 배지 1·2와 출처 카드 1·2로 연결되는 것,
+  모델이 덧붙인 범위 밖 번호 `[99]`가 배지가 아닌 일반 텍스트로 보이는 것을 확인했다.
 - **2026-10-12 재배포 완료** (커밋 `b8f36a3` 기준 빌드, 이전 배포본은 2026-07-31 빌드).
   포함된 변경사항: 검색 스레드풀/HikariCP 병목 수정(`193e7c5`), `OpenAiChatCompletionClient`
   429 재시도/백오프 + connect/read 타임아웃, `GlobalExceptionHandler` 429/502 응답 분리
@@ -1013,7 +1032,7 @@ chunks 173,035 / 임베딩 NULL 0건 / ES 173,035건, `/search` 200(3.1초, 10�
   4.9MB)를 `pg_restore --clean`으로 되돌린다. 같은 폴더의 `restore.sh`/`restore.log`는 이번에
   실제로 실행한 스크립트와 그 출력이다.
 
-## 20. 레이트 리밋 — Nginx `limit_req` (2026-10-12 작성, **EC2에는 아직 미적용**)
+## 20. 레이트 리밋 — Nginx `limit_req` (2026-10-12 적용)
 
 `/api/v1/answers`와 `/api/v1/search`는 로그인 없이 열려 있다(포트폴리오 핵심 기능이라 의도적으로
 공개 - `SecurityConfig`). 그런데 요청 횟수 제한이 어디에도 없어서, 누군가 반복 호출하면 OpenAI
@@ -1145,8 +1164,20 @@ done; echo
   429 / `/search` 연속 25회 → 200 21번 뒤 429 / 429 응답은 `application/problem+json` +
   `errorCode: RATE_LIMITED` + CORS 헤더 / 제한 중에도 `OPTIONS`는 전부 통과 / 다른 경로는 영향
   없음 / 백엔드가 직접 준 429(`LLM_RATE_LIMITED` 등)는 본문 그대로 통과 / 몇 초 뒤 다시 200.
-- **EC2에는 아직 적용하지 않았다** - 인스턴스가 정지 상태였다. 다음에 켤 때 위 "적용 방법"대로
-  적용하고, certbot이 고쳐둔 실제 파일과 합쳐졌을 때도 `nginx -t`가 통과하는지 확인할 것.
+- **EC2 적용 완료(2026-10-12, 같은 날)**: 기존 파일을
+  `/etc/nginx/insightstock-backend.conf.pre-ratelimit-2026-10-12`로 백업하고 위 설정을 합쳤다.
+  certbot이 관리하는 줄(`listen 443 ssl`, 인증서 경로, 80번 리다이렉트 블록)은 건드리지 않았고,
+  그 상태로 `nginx -t` 통과 → `nginx -s reload`. `Access-Control-Allow-Origin` 값은 EC2 `.env`의
+  `CORS_ALLOWED_ORIGINS`에서 읽어 넣었다. `https://insightstock.site`에서 실측:
+  - `/answers` 연속 15회 → 11번 통과 뒤 429 (빈 질문으로 호출해 LLM 비용 없이 확인 - 통과한
+    요청은 백엔드의 400)
+  - `/search` 연속 25회 → 22번 통과 뒤 429 (호출하는 동안 토큰이 1개 채워져 21이 아니라 22)
+  - 429 응답: `Content-Type: application/problem+json`, `Access-Control-Allow-Origin: <프론트 주소>`,
+    `Retry-After: 5`, 본문 `errorCode: RATE_LIMITED`
+  - 제한에 걸린 상태에서도 `OPTIONS` 프리플라이트는 통과(실제 프론트 origin으로 200,
+    `Allow-Methods: GET,POST,DELETE,PATCH`), `/api/v1/companies` 15회 전부 200
+  - 7초 뒤 `/answers` 2회 통과(3초에 1회씩 회복)
+  - reload 전후로 헬스체크 `UP`, `http://` → 301 유지
 
 ## 알려진 제약 / 다음 단계 후보
 
@@ -1172,4 +1203,7 @@ done; echo
 - **blue-green 시도 시 t3.medium 이상 필요(17절)** — JVM 2개가 동시에 떠야 해서다. 단일
   인스턴스 운영도 데이터 이전(19절) 이후로는 t3.small로 버티지 못하므로, 백엔드를 띄울 때는
   항상 t3.medium으로 올린다. 인스턴스의 현재 타입/상태는 progress.md의 최신 기록을 확인할 것.
-- **레이트 리밋(20절)은 EC2에 아직 적용되지 않았다** — 설정과 절차만 문서화된 상태다.
+- **레이트 리밋(20절)은 IP 단위다** — 같은 공유기/학교 네트워크의 사용자는 합쳐서 계산된다.
+  발표장에서 청중 여럿이 동시에 써보게 하려면 미리 `rate`/`burst`를 올리고 reload할 것.
+- **Vercel은 자동 배포가 아니다** — 프론트 변경은 `npx vercel --prod`를 직접 실행해야 프로덕션에
+  반영된다(2026-10-12 확인, 18절 재배포 기록).
