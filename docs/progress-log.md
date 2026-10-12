@@ -1170,7 +1170,7 @@ token 자체는 재발급하지 않고, access token으로는 호출 불가).
 ```
 
 **에러 응답** — 모든 엔드포인트가 실패 시 RFC 7807 `ProblemDetail` 형식 +
-`errorCode` 확장 필드로 통일:
+`errorCode` 확장 필드로 통일(아래 표는 2026-10-12에 실제 코드와 다시 맞췄다):
 
 ```jsonc
 {
@@ -1182,9 +1182,16 @@ token 자체는 재발급하지 않고, access token으로는 호출 불가).
 
 | `errorCode` | HTTP 상태 | 발생 상황 |
 |---|---|---|
-| `VALIDATION_ERROR` | 400 | 빈 query, topK 범위(1~50) 초과, 필수 파라미터 누락 |
-| `LLM_UNAVAILABLE` | 502 | OpenAI 채팅 완성 호출 실패 |
-| `SEARCH_UNAVAILABLE` | 502 | 검색용 쿼리 임베딩 실패 |
+| `VALIDATION_ERROR` | 400 | 빈 query, query/q 500자 초과, topK 범위 초과(`/answers` 1~20, `/search` 1~50), 필수 파라미터 누락, 쿼리 파라미터·경로 변수의 타입 오류(`?topK=abc`, `/watchlist/abc`), 비밀번호 72바이트 초과 |
+| `MALFORMED_REQUEST` | 400 | 요청 본문 JSON이 깨졌거나 필드 타입이 틀림 |
+| `NOT_FOUND` | 404 | 존재하지 않는 경로(로그인한 요청에만 보임 - 비로그인은 401이 먼저) |
+| `METHOD_NOT_ALLOWED` | 405 | 지원하지 않는 HTTP 메서드(`Allow` 헤더 포함) |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | Content-Type이 `application/json`이 아님 |
+| `LLM_RATE_LIMITED` | 429 | OpenAI 채팅 완성 rate limit - 재시도 소진 |
+| `SEARCH_RATE_LIMITED` | 429 | OpenAI 임베딩(질의) rate limit - 재시도 소진 |
+| `RATE_LIMITED` | 429 | Nginx `limit_req`가 거절(IP당 요청 수 초과, deploy.md 20절 - EC2 적용 후) |
+| `LLM_UNAVAILABLE` | 502 | OpenAI 채팅 완성 호출 실패(타임아웃, 5xx, 크레딧 소진 포함) |
+| `SEARCH_UNAVAILABLE` | 502 | 검색용 쿼리 임베딩 실패(타임아웃, 크레딧 소진 포함). 2026-10-12 이전에는 이 표와 달리 실제로 500 / `INTERNAL_ERROR`로 나갔다(progress.md 참고) |
 | `INTERNAL_ERROR` | 500 | 그 외 예상 못 한 서버 오류 |
 | `AUTH_REQUIRED` | 401 | 인증이 필요한 API에 토큰 없이(또는 무효한 토큰으로) 접근 |
 | `FORBIDDEN` | 403 | 인증은 됐지만 권한이 없는 접근(현재는 역할 구분이 없어 실사용 경로 없음) |

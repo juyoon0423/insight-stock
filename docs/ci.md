@@ -51,9 +51,9 @@ CI 러너 안에서 그대로 실행**한다.
 - `@Tag("manual")`이 없는 `@SpringBootTest`는 3개뿐이다: `InsightStockApplicationTests`
   (contextLoads), `NotificationServiceTest`, `NotificationDetectionServiceTest`(둘 다
   실제 로컬 DB에 데이터를 넣고 `@Transactional`로 롤백 — 유료 API 호출 없음, 재확인
-  완료). 나머지(`XmlTextExtractorTest`, `CitationParserTest`, `PromptBuilderTest`,
-  `RrfFuserTest`, `SearchQualityEvaluatorTest`)는 순수 단위 테스트라 컨텍스트 로딩
-  자체가 없다.
+  완료). 나머지는 전부 컨텍스트를 띄우지 않는 단위 테스트다(순수 로직 테스트, JDK 내장
+  `HttpServer`로 OpenAI를 대신하는 클라이언트 테스트, standalone MockMvc 테스트 - 2026-10-12
+  기준 15개 클래스, 유료 API 호출 없음).
 - 이 3개가 컨텍스트를 띄우려면 아래 값들이 필요하다(`@Value`가 생성자 파라미터로 박혀
   있어 값이 없으면 플레이스홀더 해석 실패로 기동 자체가 안 됨):
 
