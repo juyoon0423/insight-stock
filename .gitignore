@@ -21,3 +21,6 @@ downloads/
 
 # OS
 .DS_Store
+
+# AWS CLI 명령/출력 기록 (실제 리소스 ID, IP 등이 들어있을 수 있음)
+deploy/*.log
