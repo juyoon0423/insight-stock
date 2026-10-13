@@ -191,6 +191,10 @@ aws ec2 stop-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID>
 
 ## 7. 다시 켤 때
 
+> **2026-10-13부터 백엔드는 systemd가 자동으로 띄운다(22절).** 인스턴스를 켠 뒤 헬스체크가 `UP`이
+> 될 때까지 기다리기만 하면 되고, 아래의 `docker compose up -d`와 `nohup java -jar` 명령은 실행하지
+> 않는다. 아래 내용은 그 전까지의 절차와 주의점의 기록이다.
+
 ```bash
 aws ec2 start-instances --region ap-northeast-2 --instance-ids <INSTANCE_ID>
 aws ec2 wait instance-running --region ap-northeast-2 --instance-ids <INSTANCE_ID>
@@ -1179,6 +1183,88 @@ done; echo
   - 7초 뒤 `/answers` 2회 통과(3초에 1회씩 회복)
   - reload 전후로 헬스체크 `UP`, `http://` → 301 유지
 
+## 21. 로그인/가입 시도 제한 — Nginx `limit_req` (2026-10-13 적용)
+
+로그인과 회원가입에는 횟수 제한이 없어서 비밀번호 대입이나 계정 대량 생성을 막을 장치가 없었다.
+20절과 같은 방식(Nginx, IP 단위)으로 막는다 — 같은 이유로 앱이 아니라 Nginx를 택했다(막힌 요청이
+JVM까지 오지 않고, 새 라이브러리가 필요 없다).
+
+20절 설정에 다음을 더했다. 429 응답(`@rate_limited`)과 프리플라이트 제외(`$ratelimit_key`)는 20절
+것을 그대로 쓴다.
+
+```nginx
+# 파일 맨 위, 다른 limit_req_zone 옆
+limit_req_zone $ratelimit_key zone=auth_per_ip:10m rate=10r/m;
+
+# 443 server 블록 안
+location = /api/v1/auth/login {
+    limit_req zone=auth_per_ip burst=5 nodelay;
+    proxy_pass http://backend;
+}
+location = /api/v1/auth/signup {
+    limit_req zone=auth_per_ip burst=5 nodelay;
+    proxy_pass http://backend;
+}
+```
+
+- **분당 10회, burst 5**: 한 IP가 연달아 6번까지는 즉시 통과하고 그 뒤로는 6초에 1번이다. 사람이
+  비밀번호를 몇 번 틀리는 정도로는 걸리지 않고, 대입 공격은 시간당 600회로 묶인다. 실사용 실측이
+  아니라 정한 값이다.
+- **login과 signup이 한도를 같이 쓴다**(같은 zone). 가입 직후 로그인하는 정상 흐름은 2회라 문제없다.
+- **`/api/v1/auth/refresh`는 제한하지 않았다.** 프론트가 토큰 갱신과 세션 복원 때 자동으로 부르는
+  경로라, 여기에 걸리면 사용자가 아무것도 하지 않았는데 로그아웃된다.
+- 한계는 20절과 같다 — IP 단위라 같은 공유기의 사용자는 합쳐서 계산되고, IP를 바꿔 가며 시도하는
+  공격은 막지 못한다. 계정 단위 잠금은 넣지 않았다.
+
+실측(`https://insightstock.site`): 로그인 연속 10회 → 6번 통과(빈 본문이라 백엔드의 400) 뒤 429 /
+429 응답은 `application/problem+json`, `errorCode: RATE_LIMITED`, CORS 헤더, `Retry-After: 5` /
+`/auth/refresh` 연속 10회는 전부 통과 / 프리플라이트 200 / 13초 뒤 2회 통과 / reload 전후 헬스체크
+`UP`. 적용 전 설정은 `/etc/nginx/insightstock-backend.conf.pre-authlimit-2026-10-13`.
+
+## 22. 백엔드 자동 기동 — systemd (2026-10-13 적용)
+
+jar를 `nohup`으로 직접 띄우던 방식은 인스턴스를 켤 때마다 SSH로 들어가 다시 실행해야 했고, 그때마다
+"Elasticsearch가 healthy가 된 뒤에 띄울 것"(7절 주의 1)을 사람이 지켜야 했다. systemd 유닛으로
+등록해 둘 다 없앴다. 유닛 파일은 저장소의 `deploy/insightstock-backend.service`다.
+
+- **기동 순서**: `After=docker.service` + `ExecStartPre`에서 Postgres와 Elasticsearch가 둘 다
+  `healthy`가 될 때까지 최대 5분 기다린 뒤 jar를 띄운다. 컨테이너는 `restart: unless-stopped`라
+  docker가 뜨면 스스로 올라온다.
+- **포트**: `Environment=SERVER_PORT=8082`. Nginx upstream(14절)과 같은 값이어야 한다.
+- **로그**: 예전과 같은 `~/insight-stock/app.log`에 이어 쓴다. systemd 쪽 기록은
+  `journalctl -u insightstock-backend`.
+- **죽으면 다시 띄운다**(`Restart=on-failure`, 10초 뒤).
+
+```bash
+# 설치 (최초 1회)
+scp -i "<PEM_PATH>" deploy/insightstock-backend.service ec2-user@<PUBLIC_IP>:/tmp/
+ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
+  "sudo install -m 644 /tmp/insightstock-backend.service /etc/systemd/system/ && \
+   sudo systemctl daemon-reload && sudo systemctl enable --now insightstock-backend"
+
+# 평소 쓰는 명령
+sudo systemctl status insightstock-backend
+sudo systemctl restart insightstock-backend     # 재시작
+sudo systemctl stop insightstock-backend        # 내리기
+```
+
+실측: 서비스로 기동 후 헬스체크 `UP`(약 20초). **인스턴스를 재부팅한 뒤 아무 조작 없이 82초 만에
+헬스체크 `UP`** — `ExecStartPre`가 Elasticsearch healthy를 41초 기다린 뒤 jar를 띄웠고
+`Application run failed`는 0건, 이어서 `/search` 200.
+
+**이 절 이후로 달라지는 절차**
+
+- **켤 때(7절)**: `start-instances` 뒤에 할 일이 없다. 헬스체크가 `UP`이 될 때까지 1~2분 기다리면
+  된다. 7절의 `docker compose up -d`와 `nohup java -jar` 명령은 더 이상 실행하지 않는다 — 직접
+  띄우면 systemd가 띄운 프로세스와 포트가 겹친다.
+- **단순 재배포(18절)**: `kill <PID>`와 `nohup` 기동 대신 `sudo systemctl stop insightstock-backend`
+  → jar 교체 → `sudo systemctl start insightstock-backend`.
+- **blue-green(15절)**: 새 버전을 다른 포트로 임시로 띄우는 것은 예전처럼 직접 실행한다. 전환을
+  마친 뒤에는 **유닛의 `SERVER_PORT`를 새 라이브 포트로 고치고 `daemon-reload`** 해야 한다 — 안
+  그러면 다음 부팅 때 예전 포트로 떠서 502가 된다. 이 조합은 아직 실제로 해보지 않았다.
+- t3.small에서는 백엔드를 띄우지 않는다는 방침(19절)과 부딪친다: 이제 t3.small로 켜도 백엔드가
+  자동으로 뜬다. **켜기 전에 t3.medium으로 올리는 순서를 반드시 지킬 것.**
+
 ## 알려진 제약 / 다음 단계 후보
 
 - **t3.small은 데이터 이전(19절) 이후 검색을 감당하지 못한다** — 첫 검색 직후 인스턴스가
@@ -1190,9 +1276,9 @@ done; echo
   stop → start 후에도 IP가 유지되고 Vercel 재배포 없이 연동이 유지됨을 실측으로 확인했다.
   대신 인스턴스를 꺼둔 시간에도 Elastic IP 요금(시간당 $0.005, 월 약 $3.6)이 나가는
   트레이드오프가 생겼다.
-- 백엔드가 jar 직접 실행 방식이라 EC2 재부팅 시 자동 기동되지 않는다 — systemd 서비스 등록
-  또는 Docker 이미지화가 다음 단계 후보. 수동으로 띄울 때는 Elasticsearch가 healthy가 된
-  뒤에 띄워야 한다(7절 주의 1) — systemd로 옮길 때도 이 기동 순서 의존성을 반영할 것.
+- ~~백엔드가 EC2 재부팅 시 자동 기동되지 않는다~~ — **해결됨(2026-10-13, systemd 등록, 22절).**
+  Elasticsearch healthy를 기다린 뒤 띄우는 순서도 유닛에 들어 있다. 대신 t3.small로 켜도 백엔드가
+  자동으로 뜨므로, 켜기 전에 t3.medium으로 올리는 순서를 지켜야 한다.
 - ~~Vercel rewrite 프록시는 임시 우회다~~ — **해결됨(2026-10-12).** `insightstock.site` +
   Let's Encrypt로 백엔드에 TLS를 붙이고 프록시를 제거했다(9절, 10절).
 - Let's Encrypt 인증서는 90일짜리다(현재 만료 2027-01-10). 자동 갱신 타이머는 켜뒀지만

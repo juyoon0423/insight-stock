@@ -1,0 +1,41 @@
+# InsightStock 백엔드(jar)를 EC2 부팅 시 자동으로 띄우는 systemd 유닛 (docs/deploy.md 22절).
+# 설치 위치: /etc/systemd/system/insightstock-backend.service
+#
+# 예전에는 nohup java -jar로 직접 띄워서 인스턴스를 켤 때마다 SSH로 다시 실행해야 했다.
+
+[Unit]
+Description=InsightStock backend (Spring Boot jar)
+# Postgres/Elasticsearch가 docker 컨테이너라 docker가 먼저 떠야 한다.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ec2-user
+# .env가 jar와 같은 디렉터리에 있어야 spring-dotenv가 읽는다.
+WorkingDirectory=/home/ec2-user/insight-stock
+# Nginx upstream(deploy.md 14절)이 가리키는 포트와 같아야 한다. blue-green으로 라이브 포트를
+# 바꾸면 이 값도 같이 바꿀 것 - 안 그러면 재부팅 후 502가 된다.
+Environment=SERVER_PORT=8082
+
+# 컨테이너가 Running이어도 Elasticsearch가 요청을 받을 준비가 된 것은 아니다. healthy 전에 jar를
+# 띄우면 기동에 실패한다(deploy.md 7절 주의 1) - 둘 다 healthy가 될 때까지 최대 5분 기다린다.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do \
+  [ "$(docker inspect --format={{.State.Health.Status}} insight-stock-postgres 2>/dev/null)" = healthy ] && \
+  [ "$(docker inspect --format={{.State.Health.Status}} insight-stock-elasticsearch 2>/dev/null)" = healthy ] && exit 0; \
+  sleep 5; done; echo "Postgres/Elasticsearch가 healthy가 되지 않음" >&2; exit 1'
+TimeoutStartSec=330
+
+ExecStart=/usr/bin/java -jar /home/ec2-user/insight-stock/app.jar
+# 로그 위치는 예전과 같게 둔다(ANSWER_LOG 분석 명령 등이 app.log를 본다). 재시작해도 이어 쓴다.
+StandardOutput=append:/home/ec2-user/insight-stock/app.log
+StandardError=inherit
+
+# JVM은 SIGTERM으로 정상 종료하면 143을 돌려준다 - 실패로 세지 않는다.
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

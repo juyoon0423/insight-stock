@@ -14,8 +14,9 @@
 - [ ] **SSH가 되는지 확인한다.** 보안 그룹의 22번 규칙은 "내 IP"로 고정돼 있다. 발표장 네트워크
       에서 접속하려면 그 IP로 규칙을 갱신해야 한다(deploy.md 1절). 발표장에서 SSH를 쓸 계획이
       없다면 집에서 전부 띄워두고 간다.
-- [ ] **Postgres와 Elasticsearch가 둘 다 `healthy`인지 확인한 뒤에** 백엔드 jar를 띄운다
-      (`SERVER_PORT=8082`, deploy.md 7절). ES가 준비되기 전에 띄우면 기동에 실패하고 502만 나온다.
+- [ ] **백엔드는 직접 띄우지 않는다.** systemd가 Postgres/Elasticsearch healthy를 기다린 뒤 자동으로
+      띄운다(deploy.md 22절, 재부팅 실측 82초). 헬스체크가 `UP`이 될 때까지 1~2분 기다리고, 3분이
+      넘으면 `sudo systemctl status insightstock-backend`와 `app.log`를 본다.
 - [ ] **인증서 만료일을 확인한다** (`sudo certbot certificates`). 2026-10-12 기준 만료는
       2027-01-10이라 발표일에는 문제없지만, 자동 갱신은 인스턴스가 꺼져 있는 동안 돌지 않는다.
 - [ ] **헬스체크**: `curl https://insightstock.site/actuator/health` → `{"status":"UP"}`.
@@ -83,7 +84,7 @@
 
 | 증상 | 먼저 볼 것 |
 |---|---|
-| 화면에 "서버에 연결할 수 없습니다" | 헬스체크. 502면 백엔드 프로세스가 죽은 것 — `ps`로 확인 후 재기동(deploy.md 7절) |
+| 화면에 "서버에 연결할 수 없습니다" | 헬스체크. 502면 백엔드 프로세스가 죽은 것 — `sudo systemctl status insightstock-backend`로 확인 후 `restart`(deploy.md 22절) |
 | 모든 요청이 타임아웃, SSH도 안 됨 | 메모리 부족으로 인스턴스가 멈춘 것(t3.small로 켰을 때의 증상). 강제 정지 후 t3.medium으로 재기동(deploy.md 17절, 19절) |
 | "요청이 너무 많습니다" (429 `RATE_LIMITED`) | Nginx 레이트 리밋. 몇 초 기다리면 풀린다. 계속 걸리면 `rate`/`burst`를 올리고 reload |
 | "지금 요청이 몰려…" (429 `LLM_RATE_LIMITED` / `SEARCH_RATE_LIMITED`) | OpenAI 분당 토큰 한도. 1분 기다린다 |
