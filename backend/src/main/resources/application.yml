@@ -17,9 +17,18 @@ spring:
       # 기본값(10)에 암묵적으로 의존하지 않고 명시 - k6 부하테스트(backend/loadtest/)에서
       # 기본값 10으로는 동시 요청 100건 중 최대 100건이 커넥션을 기다리며 30초 타임아웃으로
       # 실패하는 걸 실측했다(HikariPool-1 ... waiting=100 로그). Postgres max_connections=100
-      # (실측 확인, 이 DB는 백엔드 하나만 쓰므로 경쟁 없음)이고 목표 동시 사용자 10~50명을
-      # 큐잉 없이 받아내면서 한도 안에 headroom을 남기는 값으로 50을 선택(docs/loadtest.md 참고).
+      # (실측 확인)이고 목표 동시 사용자 10~50명을 큐잉 없이 받아내면서 한도 안에 headroom을
+      # 남기는 값으로 50을 선택(docs/loadtest.md 참고). 평소에는 이 DB를 백엔드 인스턴스 하나만
+      # 쓰지만, Blue-Green 전환 구간(docs/deploy.md 15절)에는 두 인스턴스가 동시에 뜬다.
       maximum-pool-size: 50
+      # 지정하지 않으면 HikariCP가 maximum-pool-size와 같은 값(50)으로 맞춰서, 트래픽이 없는
+      # 인스턴스도 기동 직후 커넥션 50개를 채워 계속 쥔다. 그러면 Blue-Green 전환 중에
+      # 50 + 50 = 100으로 max_connections(100)를 전부 채우고, 일반 계정 한도(100 -
+      # superuser_reserved_connections 3 = 97)는 넘는다. 10으로 낮춰 대기 중인 인스턴스(전환 전의
+      # 새 인스턴스, 전환 후의 이전 인스턴스)는 10개만 쥐게 했다 - 부하가 오면 여전히 50까지
+      # 늘어난다. 10을 넘는 유휴 커넥션은 idle-timeout(기본 10분) 뒤에 닫히므로, 부하를 받던
+      # 이전 인스턴스가 곧바로 10개로 줄어드는 것은 아니다.
+      minimum-idle: 10
   jpa:
     hibernate:
       ddl-auto: validate
