@@ -822,7 +822,9 @@ ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
   "grep -o 'server 127.0.0.1:[0-9]*' /etc/nginx/conf.d/insightstock-backend.conf; \
    docker inspect --format='{{.State.Health.Status}}' insight-stock-postgres insight-stock-elasticsearch"
 
-# 3. 기존 프로세스 종료 → 이전 jar는 롤백용으로 남기고 교체 → 같은 포트로 기동
+# 3. (2026-10-13부터는 systemd로 내리고 올린다 - 22절. kill/nohup 대신
+#     sudo systemctl stop insightstock-backend → jar 교체 → sudo systemctl start insightstock-backend)
+#    아래는 그 전까지 쓰던 방식: 기존 프로세스 종료 → 이전 jar는 롤백용으로 남기고 교체 → 같은 포트로 기동
 ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "ps -eo pid,args | grep '[j]ava -jar'"   # PID 확인
 ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> "kill <PID>"
 ssh -i "<PEM_PATH>" ec2-user@<PUBLIC_IP> \
@@ -838,6 +840,26 @@ curl https://insightstock.site/actuator/health     # {"status":"UP"}
 
 ### 재배포 기록
 
+- **2026-10-13 재배포 완료** (커밋 `6453405` 기준 빌드, t3.medium, **systemd 절차로는 첫 재배포**).
+  `7500c5e` 이후의 백엔드 변경을 전부 올렸다: LLM 응답 방어(`max_tokens` 1000 등), 검색 인덱스에만
+  있는 청크 제외, DART 타임아웃과 스케줄러 스레드 4개, 질의 임베딩 재시도 값 분리(이상 10-12),
+  프롬프트 보강(접수일자, `<context>`/`<question>` 태그, 규칙 6·7 - 10-13).
+  절차(22절): jar 전송 후 sha256 대조 → `sudo systemctl stop insightstock-backend` → `app.jar`를
+  `app-prev-1013.jar`로 남기고 교체 → `sudo systemctl start insightstock-backend`. 시작부터 헬스체크
+  `UP`까지 약 25초.
+  검증(`https://insightstock.site`): Flyway 7개 마이그레이션 검증 통과, 헬스체크 `UP`, `/search`
+  200(10건, 3.0초), `/answers` 200(2.5초, 원익 주식소각 질의에 49주 / 165,783원, 출처와
+  `citedNumbers: [2]` 포함). `ANSWER_LOG`의 `promptVersion`이 `6cc9fb065630`(새 프롬프트)이고 입력
+  6,092토큰으로 로컬 측정과 같다. 기동 로그의 ERROR 1건은 원문 수집의 알려진 문제(감사보고서 ZIP
+  파일명 불일치)이고 배포와 무관하다. 이전 로그는 `app-before-redeploy-1013.log`.
+  **같이 한 것 - 알림 감지 켜기**: EC2 `.env`에 `notification.collector.enabled=true`를 넣었다.
+  재시작 직후 `알림 감지 배치 완료: 신규 6건`이 찍혔고 `shedlock`에 `notificationDetection` 행이
+  생겼다. **주의: `NOTIFICATION_COLLECTOR_ENABLED=true`(대문자 환경변수 형태)로는 켜지지 않았다** -
+  먼저 그렇게 넣고 재기동했더니 스케줄러가 뜨지 않았다. spring-dotenv는 `.env`의 키를 이름 그대로만
+  찾아주므로(`${OPENAI_API_KEY}`처럼 `application.yml`이 그 이름을 직접 참조하는 경우에만 쓰인다),
+  yml에 자리표시자가 없는 설정을 `.env`로 덮어쓰려면 **스프링 속성 이름 그대로** 적어야 한다. 대문자
+  형태가 통하는 것은 진짜 OS 환경변수일 때뿐이다. 점이 들어간 키가 있어도 `docker compose config`는
+  통과한다. 수정 전 `.env`는 `.env.bak-2026-10-13`.
 - **2026-10-12 2차 재배포 완료** (커밋 `7500c5e` 기준 빌드, t3.medium). 같은 날 1차(`b8f36a3`)
   이후의 변경을 전부 올렸다: 검색 경로 임베딩 실패의 응답 코드 정상화(500 → 502 / 429 분리),
   인용 번호 `citedNumbers`, 공개 API 입력 상한(`query`·`q` 500자, `/answers` `topK` 20, 비밀번호
