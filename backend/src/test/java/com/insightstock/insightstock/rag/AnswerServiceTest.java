@@ -174,6 +174,7 @@ class AnswerServiceTest {
                 number,
                 null,
                 "rcept-" + number,
+                "20260721",
                 "회사" + number,
                 "보고서" + number,
                 null,

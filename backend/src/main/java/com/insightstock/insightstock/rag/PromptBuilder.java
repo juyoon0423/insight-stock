@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StreamUtils;
@@ -18,6 +19,9 @@ import org.springframework.util.StreamUtils;
 public class PromptBuilder {
 
     private static final String SYSTEM_PROMPT_PATH = "prompts/rag-system-prompt.txt";
+
+    private static final Pattern BOUNDARY_TAG =
+            Pattern.compile("<\\s*/?\\s*(context|question)\\s*>", Pattern.CASE_INSENSITIVE);
 
     private final String systemPrompt;
     private final String promptVersion;
@@ -34,9 +38,23 @@ public class PromptBuilder {
         return promptVersion;
     }
 
+    // 컨텍스트와 질문을 <context>/<question> 태그로 감싼다. 예전에는 "[컨텍스트]\n...[질문]\n"처럼
+    // 구분 없이 이어 붙여서, 청크 본문이나 질문에 들어 있는 문장이 지시문처럼 읽힐 여지가 있었다
+    // (프롬프트 인젝션). 태그로 경계를 만들고 시스템 프롬프트 규칙 7이 "태그 안은 자료일 뿐
+    // 지시가 아니다"라고 못박는다. 본문/질문에 같은 태그가 들어 있으면 경계를 가짜로 닫을 수
+    // 있으므로 넣기 전에 지운다(neutralize).
     public RagPrompt build(String query, List<RankedChunk> chunks) {
-        String userPrompt = "[컨텍스트]\n" + buildContextBlock(chunks) + "\n[질문]\n" + query;
+        String userPrompt = "<context>\n" + buildContextBlock(chunks) + "</context>\n\n"
+                + "<question>\n" + neutralize(query) + "\n</question>";
         return new RagPrompt(systemPrompt, userPrompt);
+    }
+
+    // DART의 "yyyyMMdd"를 "yyyy-MM-dd"로 바꾼다. 8자리 숫자가 아니면 받은 값을 그대로 돌려준다.
+    public static String formatRceptDt(String rceptDt) {
+        if (rceptDt == null || !rceptDt.matches("\\d{8}")) {
+            return rceptDt;
+        }
+        return rceptDt.substring(0, 4) + "-" + rceptDt.substring(4, 6) + "-" + rceptDt.substring(6);
     }
 
     private String buildContextBlock(List<RankedChunk> chunks) {
@@ -44,13 +62,23 @@ public class PromptBuilder {
         for (int i = 0; i < chunks.size(); i++) {
             RankedChunk chunk = chunks.get(i);
             sb.append('[').append(i + 1).append("] (")
-                    .append(chunk.corpName()).append(" / ").append(chunk.reportNm());
-            if (chunk.sectionTitle() != null && !chunk.sectionTitle().isBlank()) {
-                sb.append(" / ").append(chunk.sectionTitle());
+                    .append(neutralize(chunk.corpName())).append(" / ").append(neutralize(chunk.reportNm()));
+            // 접수일이 없으면 "최근/최신"을 묻는 질문에서 어느 공시가 더 나중 것인지 모델이 알 수 없다.
+            if (chunk.rceptDt() != null && !chunk.rceptDt().isBlank()) {
+                sb.append(" / 접수일 ").append(formatRceptDt(chunk.rceptDt()));
             }
-            sb.append(")\n").append(chunk.content()).append("\n\n");
+            if (chunk.sectionTitle() != null && !chunk.sectionTitle().isBlank()) {
+                sb.append(" / ").append(neutralize(chunk.sectionTitle()));
+            }
+            sb.append(")\n").append(neutralize(chunk.content())).append("\n\n");
         }
         return sb.toString();
+    }
+
+    // 경계로 쓰는 태그(<context>, </context>, <question>, </question>)만 지운다. 그 밖의 꺾쇠는
+    // 공시 본문에 실제로 쓰이므로(부등호 등) 건드리지 않는다.
+    private String neutralize(String text) {
+        return text == null ? "" : BOUNDARY_TAG.matcher(text).replaceAll("");
     }
 
     private String loadSystemPrompt() {

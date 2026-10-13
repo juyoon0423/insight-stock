@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.insightstock.insightstock.rag.AnswerService;
+import com.insightstock.insightstock.rag.PromptBuilder;
 import com.insightstock.insightstock.rag.dto.AnswerResponse;
 import com.insightstock.insightstock.rag.dto.SourceRef;
 import com.insightstock.insightstock.rag.evaluation.AnswerQualityEvaluator.CitationValidity;
@@ -61,8 +62,9 @@ class AnswerQualityEvaluationManualIT {
     private static final Path REPORT_PATH = Path.of("build/reports/answer-quality/answer-quality-result.md");
 
     // OpenAI TPM 한도(200,000)를 건드리지 않도록 호출 사이에 둔다 - 26건 x 약 4,500토큰을 한꺼번에
-    // 보내면 한도의 절반을 넘는다. 간격을 두면 분당 약 15건(약 7만 토큰) 수준이다.
-    private static final long PAUSE_BETWEEN_CALLS_MS = 1500;
+    // 보내면 한도의 절반을 넘는다. 간격을 두면 분당 약 15건(약 7만 토큰) 수준이다. 요청당 토큰은
+    // top-K에 비례하므로 간격도 top-K에 비례시킨다(top-K 10 -> 1.5초, 20 -> 3초).
+    private static final long PAUSE_PER_CONTEXT_CHUNK_MS = 150;
 
     @Autowired
     private HybridSearchService hybridSearchService;
@@ -107,7 +109,7 @@ class AnswerQualityEvaluationManualIT {
         List<AnswerableResult> results = new ArrayList<>();
         for (GroundTruthQuery query : queries) {
             results.add(evaluateAnswerableOne(query, setLabel, expectedFacts.get(query.id())));
-            Thread.sleep(PAUSE_BETWEEN_CALLS_MS);
+            Thread.sleep(PAUSE_PER_CONTEXT_CHUNK_MS * topK);
         }
         return results;
     }
@@ -142,7 +144,7 @@ class AnswerQualityEvaluationManualIT {
     private UnanswerableResult evaluateUnanswerable(UnanswerableQuery query) throws InterruptedException {
         List<RankedChunk> context = hybridSearchService.search(query.query(), topK);
         AnswerResponse response = answerService.answer(query.query());
-        Thread.sleep(PAUSE_BETWEEN_CALLS_MS);
+        Thread.sleep(PAUSE_PER_CONTEXT_CHUNK_MS * topK);
 
         boolean exactRefusal = evaluator.isExactRefusal(response.answer()) && response.sources().isEmpty();
         return new UnanswerableResult(
@@ -162,8 +164,14 @@ class AnswerQualityEvaluationManualIT {
         return evaluator.analyzeNumbers(
                 response.answer(),
                 response.citedNumbers(),
-                context.stream().map(RankedChunk::content).toList(),
+                context.stream().map(this::contextTextSeenByModel).toList(),
                 query);
+    }
+
+    // 모델은 본문뿐 아니라 머리말의 접수일도 본다. 답변이 접수일을 밝혔을 때 그 날짜의 숫자가
+    // "컨텍스트 어디에도 없음(환각)"으로 잡히지 않도록 채점용 컨텍스트에도 같은 표기로 넣는다.
+    private String contextTextSeenByModel(RankedChunk chunk) {
+        return "접수일 " + PromptBuilder.formatRceptDt(chunk.rceptDt()) + "\n" + chunk.content();
     }
 
     // 정답 공시의 청크가 컨텍스트 몇 번째에 있었는가(1부터, 없으면 -1). 중복 제거로 대표 청크에
