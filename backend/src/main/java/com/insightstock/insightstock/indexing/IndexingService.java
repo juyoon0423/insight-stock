@@ -52,6 +52,31 @@ public class IndexingService {
         }
     }
 
+    // 지정한 공시만 색인한다(접수일 구간 백필용 - indexPending()은 상태와 id 순서로만 고른다).
+    // CHUNKED가 아닌 공시는 건너뛴다. 반환값은 실제로 색인을 시도한 건수.
+    public int indexByIds(List<Long> disclosureIds) {
+        int processed = 0;
+        for (Long id : disclosureIds) {
+            Boolean done = null;
+            try {
+                done = transactionTemplate.execute(status -> {
+                    Disclosure disclosure = disclosureRepository.findById(id).orElse(null);
+                    if (disclosure == null || disclosure.getDocumentStatus() != DocumentStatus.CHUNKED) {
+                        return false;
+                    }
+                    indexDisclosure(id);
+                    return true;
+                });
+            } catch (Exception e) {
+                log.error("공시 색인 실패 (disclosure_id={})", id, e);
+            }
+            if (Boolean.TRUE.equals(done)) {
+                processed++;
+            }
+        }
+        return processed;
+    }
+
     private void indexOneInOwnTransaction(Long disclosureId, String rceptNo) {
         try {
             transactionTemplate.executeWithoutResult(status -> indexDisclosure(disclosureId));

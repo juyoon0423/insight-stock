@@ -74,6 +74,32 @@ public class ChunkingService {
         }
     }
 
+    // 지정한 공시만 청킹한다(접수일 구간 백필용 - chunkPending()은 상태와 id 순서로만 고른다).
+    // 공시를 하나씩 다시 조회하므로 원문이 큰 문서도 한 번에 한 건만 메모리에 올라간다.
+    // PARSED가 아닌 공시는 건너뛴다. 반환값은 실제로 청킹을 시도한 건수.
+    public int chunkByIds(List<Long> disclosureIds) {
+        int processed = 0;
+        for (Long id : disclosureIds) {
+            Boolean done = null;
+            try {
+                done = transactionTemplate.execute(status -> {
+                    Disclosure disclosure = disclosureRepository.findById(id).orElse(null);
+                    if (disclosure == null || disclosure.getDocumentStatus() != DocumentStatus.PARSED) {
+                        return false;
+                    }
+                    chunkDisclosure(id);
+                    return true;
+                });
+            } catch (Exception e) {
+                log.error("공시 청킹 실패 (disclosure_id={})", id, e);
+            }
+            if (Boolean.TRUE.equals(done)) {
+                processed++;
+            }
+        }
+        return processed;
+    }
+
     // 문서 하나당 별도 트랜잭션으로 처리한다. 배치 전체를 하나의 트랜잭션으로 묶었을 때,
     // 한 문서의 실패(예: 유니크 제약 위반)가 Postgres 커넥션을 "current transaction is
     // aborted" 상태로 만들어 이후 나머지 모든 문서가 연쇄적으로 실패하는 버그가 있었다 -

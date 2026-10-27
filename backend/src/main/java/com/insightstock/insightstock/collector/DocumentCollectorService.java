@@ -54,6 +54,23 @@ public class DocumentCollectorService {
         }
     }
 
+    // 지정한 공시만 처리한다(접수일 구간 백필용). collectPending()은 상태와 id 순서로만 대상을
+    // 고르기 때문에, 다른 날짜의 PENDING이 남아 있는 DB에서는 원하는 구간만 처리할 수 없다.
+    // 호출 시점에 PENDING이 아닌 공시(이미 처리됨, 다른 프로세스가 먼저 처리 등)는 건너뛴다.
+    // 반환값은 실제로 처리를 시도한 건수.
+    public int collectByIds(List<Long> disclosureIds) {
+        int processed = 0;
+        for (Long id : disclosureIds) {
+            Disclosure disclosure = disclosureRepository.findById(id).orElse(null);
+            if (disclosure == null || disclosure.getDocumentStatus() != DocumentStatus.PENDING) {
+                continue;
+            }
+            processDisclosure(disclosure);
+            processed++;
+        }
+        return processed;
+    }
+
     private void processDisclosure(Disclosure disclosure) {
         String rceptNo = disclosure.getRceptNo();
         try {
