@@ -1,13 +1,17 @@
 package com.insightstock.insightstock.collector;
 
+import com.insightstock.insightstock.backfill.BackfillRange;
 import com.insightstock.insightstock.dart.DartListClient;
 import com.insightstock.insightstock.dart.dto.DartListResponse;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 // 데이터 규모 확대 백필 1단계 - DART list API로 과거 기간 공시를 수집한다(collect()는
@@ -15,18 +19,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 // 자체는 무료지만 disclosures/companies 테이블을 대량으로 바꾸는 통합 테스트라
 // CorpCodeSyncManualIT와 같은 패턴(@Tag("manual"), manualTest 태스크로만 실행)을 따른다.
 @Tag("manual")
-@SpringBootTest
+// scheduling.enabled=false: 컨텍스트만 떠도 수집 스케줄러가 대상 DB에 쓰는 것을 막는다.
+@SpringBootTest(properties = "scheduling.enabled=false")
 class DisclosureCollectorManualIT {
 
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
 
-    // 2단계 실행을 승인하기 전까지는 false로 두어, manualTest를 통째로 돌리거나
-    // 실수로 이 테스트를 실행해도 실제 수집이 일어나지 않게 한다.
-    private static final boolean BACKFILL_APPROVED = false;
-    // 후보 기간(progress.md 데이터 규모 확대 논의) - peekCount() 실측(일평균 ~570건,
-    // 90일 기준 55,310건이 예상의 8배였음) 이후 가장 보수적인 7일로 시작하기로 함.
-    // peekCount()/backfillRange()가 같은 범위를 보도록 이 상수 하나로 공유한다.
-    private static final int BACKFILL_DAYS = 7;
+    // 실행할 때 BACKFILL_STEP=collect-list를 직접 지정해야만 수집한다(코드에 true를 남기지 않음).
+    // manualTest를 통째로 돌리거나 실수로 이 테스트를 실행해도 실제 수집이 일어나지 않게 한다.
+    // 2026-07 백필(최근 7일) 때는 코드 상수 BACKFILL_APPROVED를 true/false로 바꿔가며 실행했다.
+    private static final String STEP = "collect-list";
 
     @Autowired
     private DisclosureCollectorService collectorService;
@@ -36,6 +38,12 @@ class DisclosureCollectorManualIT {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private DataSource dataSource;
+
+    @Autowired
+    private ApplicationContext context;
 
     // DB에 아무 것도 쓰지 않는 순수 조회 - list API를 page_count=1로 구간마다 1번씩만
     // 불러 totalCount만 확인한다(1건만 받아와도 totalCount는 전체 범위 기준 값 그대로
@@ -60,11 +68,12 @@ class DisclosureCollectorManualIT {
     }
 
     @Test
-    void backfillRange() {
-        if (!BACKFILL_APPROVED) {
-            System.out.println("BACKFILL_APPROVED=false - 2단계 실행 승인 후 true로 바꾸고 재실행하세요.");
+    void backfillRange() throws Exception {
+        if (!BackfillRange.stepIs(STEP)) {
+            System.out.println(BackfillRange.STEP_ENV + "=" + STEP + " 일 때만 실행한다 - 건너뜀");
             return;
         }
+        BackfillRange.assertSafeContext(context, dataSource);
 
         LocalDate[] range = resolveRange();
         LocalDate beginDate = range[0];
@@ -82,10 +91,12 @@ class DisclosureCollectorManualIT {
         System.out.println("companies 총 건수: " + beforeCompanies + " -> " + afterCompanies);
     }
 
+    // 2026-10 운영 DB 추가 색인: 고정 구간(BackfillRange, 10/20~10/26). 예전에는 "어제 기준
+    // 최근 7일"이었는데, 실행 날짜에 따라 구간이 바뀌어 다른 단계와 어긋날 수 있었다.
     private LocalDate[] resolveRange() {
-        LocalDate endDate = LocalDate.now(KST).minusDays(1);
-        LocalDate beginDate = endDate.minusDays(BACKFILL_DAYS - 1);
-        return new LocalDate[] {beginDate, endDate};
+        DateTimeFormatter yyyymmdd = DateTimeFormatter.BASIC_ISO_DATE;
+        return new LocalDate[] {
+                LocalDate.parse(BackfillRange.FROM, yyyymmdd), LocalDate.parse(BackfillRange.TO, yyyymmdd)};
     }
 
     private long countDisclosures() {
