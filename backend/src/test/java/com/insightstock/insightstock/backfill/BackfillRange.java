@@ -27,19 +27,23 @@ public final class BackfillRange {
 
     // 파일럿 20건의 유형별 배분. 청크 수를 좌우하는 큰 문서(반기보고서·투자설명서·증권신고서·
     // 감사보고서)를 일부러 넣고, 나머지는 이 구간에 많은 유형과 그 밖의 유형으로 채운다.
-    // 같은 유형 안에서는 id가 작은 순서 - 상태와 무관하게 고르므로 단계가 바뀌어도 대상이 같다.
+    // 유형은 보고서명 "앞부분"으로 맞춘다([기재정정] 같은 머리말은 허용) - 처음에 '%증권신고서%'로
+    // 했더니 "효력발생안내( ... 제출 증권신고서 )" 같은 한두 줄짜리 안내가 큰 문서 자리에 뽑혔다.
+    // 같은 유형 안에서는 md5(rcept_no) 순서 - 구간 전체에서 고르게 섞이고, 상태와 무관하게
+    // 고르므로 단계가 바뀌어도 대상이 같다.
+    private static final String PREFIX = "^(\\[[^]]*\\])?";
     private static final String[][] PILOT_QUOTAS = {
-            {"%반기보고서%", "2"},
-            {"%투자설명서%", "2"},
-            {"%증권신고서%", "2"},
-            {"%감사보고서%", "1"},
-            {"%주요사항보고서%", "2"},
-            {"%임원ㆍ주요주주%", "2"},
-            {"%주식등의대량보유%", "1"},
-            {"%증권발행실적%", "1"},
-            {"%단일판매%", "1"},
-            {"%기업설명회%", "1"},
-            {"%일괄신고%", "1"},
+            {PREFIX + "반기보고서", "2"},
+            {PREFIX + "투자설명서", "2"},
+            {PREFIX + "증권신고서", "2"},
+            {PREFIX + "감사보고서", "1"},
+            {PREFIX + "주요사항보고서", "2"},
+            {PREFIX + "임원ㆍ주요주주", "2"},
+            {PREFIX + "주식등의대량보유", "1"},
+            {PREFIX + "증권발행실적", "1"},
+            {PREFIX + "단일판매", "1"},
+            {PREFIX + "기업설명회", "1"},
+            {PREFIX + "일괄신고", "1"},
     };
     private static final int PILOT_OTHERS = 4;
     public static final int PILOT_SIZE = 20;
@@ -69,19 +73,19 @@ public final class BackfillRange {
         List<Long> chosen = new ArrayList<>();
         for (String[] quota : PILOT_QUOTAS) {
             chosen.addAll(jdbc.queryForList(
-                    "SELECT id FROM disclosures WHERE rcept_dt BETWEEN ? AND ? AND report_nm LIKE ? "
-                            + "ORDER BY id LIMIT ?",
+                    "SELECT id FROM disclosures WHERE rcept_dt BETWEEN ? AND ? AND report_nm ~ ? "
+                            + "ORDER BY md5(rcept_no) LIMIT ?",
                     Long.class, FROM, TO, quota[0], Integer.parseInt(quota[1])));
         }
         StringBuilder notLike = new StringBuilder();
         List<Object> args = new ArrayList<>(List.of(FROM, TO));
         for (String[] quota : PILOT_QUOTAS) {
-            notLike.append(" AND report_nm NOT LIKE ?");
+            notLike.append(" AND report_nm !~ ?");
             args.add(quota[0]);
         }
         args.add(PILOT_OTHERS);
         chosen.addAll(jdbc.queryForList(
-                "SELECT id FROM disclosures WHERE rcept_dt BETWEEN ? AND ?" + notLike + " ORDER BY id LIMIT ?",
+                "SELECT id FROM disclosures WHERE rcept_dt BETWEEN ? AND ?" + notLike + " ORDER BY md5(rcept_no) LIMIT ?",
                 Long.class, args.toArray()));
         return chosen;
     }
