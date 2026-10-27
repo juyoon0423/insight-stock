@@ -542,7 +542,7 @@ EC2 청크 0건 / 현대모비스 배당금 질문의 원인(검색 실패로 �
   stop→start를 해서 IP가 그대로인 것, 그리고 Vercel을 건드리지 않고도
   프론트→백엔드 호출이 다시 정상 동작하는 것까지 실측으로 확인했다(절차와
   검증 결과는 docs/deploy.md 12절). IP 값은 문서에 적지 않기로 했다 -
-  `describe-addresses`에 Name 태그 `insightstock-eip`로 조회한다.
+  `describe-addresses`에 Name 태그 `<EIP_TAG>`로 조회한다.
   **남은 트레이드오프(비용)**: 2024-02 이후 AWS는 모든 퍼블릭 IPv4에
   시간당 $0.005를 과금하므로 Elastic IP는 인스턴스를 꺼둔 동안에도 요금이
   나간다(월 약 $3.6). 이전에는 꺼두면 IP 비용이 0이었으니 평소 꺼두는

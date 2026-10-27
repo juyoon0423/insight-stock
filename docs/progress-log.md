@@ -2111,14 +2111,14 @@ user-data 스크립트) → `1a070de`(문서 공백 보완, 프론트엔드 `.en
   다시 볼 때 "Claude Code가 t3.small을 측정해서 골랐다"고 오해하지 않도록
   출처를 분명히 남긴다).
 
-- **보안 그룹 + 키페어 세팅** — `insightstock-sg`(`<SECURITY_GROUP_ID>`)를
+- **보안 그룹 + 키페어 세팅** — `<SG_NAME>`(`<SECURITY_GROUP_ID>`)를
   새로 만들어 SSH(22)는 본인 퍼블릭 IP(`/32`)만 허용(`0.0.0.0/0` 금지),
   HTTP(80)/HTTPS(443)는 전체 허용, 8080(백엔드 API)도 이 시점엔 검증
   편의를 위해 전체 허용해뒀다(문서에 "임시로만, 나중에 Nginx 뒤로 감출
   예정"이라고 명시 - 실제로 다음 세션인 9절에서 그대로 제거됨). DB(5432)/
   ES(9200)는 처음부터 보안 그룹에 아예 열지 않았다 - EC2 내부 docker
   네트워크에서만 접근하면 충분하기 때문. 키페어는 이미 생성돼 있던
-  `insightstock-key`를 그대로 썼다.
+  `<KEY_NAME>`를 그대로 썼다.
 
 - **EC2 인스턴스 생성 + user-data 자동화** — Amazon Linux 2023 최신 AMI를
   `describe-images`로 조회해 `run-instances`(t3.small, 태그
