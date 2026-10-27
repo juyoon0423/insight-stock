@@ -37,6 +37,7 @@ scripts/demo-server.sh status | start | wait | stop
 ## 11/3 (전날)
 
 - [ ] `scripts/demo-server.sh start` → `[PASS] health 200`이 나올 때까지 기다린다. 서버는 켜 둔 채로 간다.
+- [ ] 서버를 켠 뒤 `scripts/demo-server.sh status`로 인스턴스 타입이 `t3.medium`인지 확인한다.
 - [ ] 시연 화면에서 시연 질문(아래 표)을 전부 한 번씩 실행한다(리허설).
 - [ ] 학교 와이파이에서 `scripts/demo-network-check.sh`를 실행한다. 가능하면 전시 장소에서 한다.
       인증 페이지가 있으면 로그인 방법(학번 로그인 등)을 메모해 둔다.

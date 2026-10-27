@@ -7,7 +7,7 @@
 #   scripts/demo-server.sh status   # 상태, 인스턴스 타입, 공인 IP 조회 (읽기 전용)
 #   scripts/demo-server.sh start    # 인스턴스 시작 -> running 대기 -> health 대기(wait)
 #   scripts/demo-server.sh wait     # /actuator/health가 200이 될 때까지 최대 5분 대기
-#   scripts/demo-server.sh stop     # 확인 후 인스턴스 중지 (전시 후 비용 절감용)
+#   scripts/demo-server.sh stop     # 확인 후 인스턴스 중지 (타입 복귀 질문에는 전시 11/4 전까지 n)
 #
 # 환경변수:
 #   INSIGHTSTOCK_INSTANCE_ID  대상 인스턴스 ID (필수)
@@ -20,7 +20,9 @@
 #
 # 운영 방침(docs/deploy.md 19절, docs/runbook-bg-2026-10-14.md 0단계):
 #   t3.small로 켜면 백엔드가 자동 기동하면서 메모리 부족으로 인스턴스가 멈출 수 있다.
-#   그래서 켤 때는 t3.medium으로 올리고, 끈 뒤에는 t3.small로 되돌린다.
+#   그래서 켤 때는 t3.medium으로 올린다. 전시(11/4) 전까지는 끈 뒤에도 t3.medium을 유지한다 -
+#   데이터가 2배가 된 지금(DB 5.7GB, 벡터 인덱스 2.2GB)은 t3.small로 되돌리면 먹통이 될 수 있다.
+#   전시 후 t3.small 복귀 여부는 데이터 크기를 보고 정한다(docs/demo-runbook.md).
 #   start/stop은 이 변경을 할지 매번 물어본다(타입 변경은 인스턴스가 stopped일 때만 가능).
 #
 # 재부팅 후 자동 기동(docs/deploy.md 22절): docker(enable) -> Postgres/ES 컨테이너
@@ -175,7 +177,7 @@ cmd_stop() {
   echo "중지 요청 완료. stopped 대기..."
   ec2 wait instance-stopped --instance-ids "$INSIGHTSTOCK_INSTANCE_ID" || return 1
   echo "stopped."
-  if confirm "평소 운영 방침대로 인스턴스 타입을 $IDLE_INSTANCE_TYPE 로 되돌릴까요?"; then
+  if confirm "전시(11/4) 전까지는 n(Enter)을 입력해 t3.medium을 유지하세요. 데이터가 2배가 된 지금은 $IDLE_INSTANCE_TYPE 로 되돌리면 먹통이 될 수 있습니다. 그래도 $IDLE_INSTANCE_TYPE 로 되돌릴까요?"; then
     ec2 modify-instance-attribute --instance-id "$INSIGHTSTOCK_INSTANCE_ID" \
       --instance-type "{\"Value\":\"$IDLE_INSTANCE_TYPE\"}" || return 1
     echo "타입 변경 완료: $IDLE_INSTANCE_TYPE"
