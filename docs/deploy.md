@@ -13,14 +13,20 @@
   - Spring Boot는 컨테이너화하지 않고 `java -jar`로 호스트에서 직접 실행 (Docker 이미지화는 나중 단계)
   - 백엔드는 `localhost:5432`, `localhost:9200`으로 접속 (compose가 호스트 포트로 매핑해주므로 가능)
 - DB(5432)/ES(9200) 포트는 보안 그룹에서 열지 않는다 — 호스트 내부에서만 접근.
+  - 2026-10-27부터 `docker-compose.yml`도 두 포트를 `127.0.0.1`에만 바인딩한다(그 전에는 모든
+    인터페이스에 열려 있어 보안 그룹이 유일한 방어선이었다). 운영 서버에는 아직 반영하지 않았다 —
+    반영하려면 compose 파일을 다시 복사하고 `docker compose up -d`로 컨테이너를 재생성해야 한다.
+  - 운영 DB/ES에 직접 접속할 때는 SSH 터널을 쓴다(24절).
 
 ## 사전 준비물
 
 - AWS CLI 인증 완료 (`aws sts get-caller-identity`로 확인)
 - 리전: `ap-northeast-2` (서울)
-- SSH 키 페어: `insightstock-key` (AWS에 등록됨), `.pem` 파일은 본인 로컬 어딘가에 보관
+- SSH 키 페어: `<KEY_NAME>` (AWS에 등록됨), `.pem` 파일은 본인 로컬 어딘가에 보관
   - 아래 명령어의 `<PEM_PATH>`는 본인 키 경로로 치환할 것 (예: 데스크톱 등 개인 경로 — 절대 문서/커밋에 실제 경로를 남기지 않는다)
   - 경로에 공백이 있을 수 있으니 항상 큰따옴표로 감쌀 것: `"<PEM_PATH>"`
+- `<KEY_NAME>`(키 페어), `<SG_NAME>`(보안 그룹), `<EIP_TAG>`(Elastic IP의 Name 태그)는 실제 리소스
+  이름 대신 쓴 자리표시자다. 직접 정한 이름으로 바꾸되, 문서 전체에서 같은 값을 쓴다.
 - 프로젝트 루트의 `.env` (커밋 안 됨 — DART/OpenAI API 키, DB 비밀번호, JWT 시크릿 포함)
 
 ## 1. 보안 그룹 생성 (최초 1회)
@@ -32,11 +38,11 @@ VPC_ID=$(aws ec2 describe-vpcs --region ap-northeast-2 \
 MY_IP=$(curl -s https://checkip.amazonaws.com)/32
 
 SG_ID=$(aws ec2 create-security-group --region ap-northeast-2 \
-  --group-name insightstock-sg --description "InsightStock backend deploy SG" \
+  --group-name <SG_NAME> --description "InsightStock backend deploy SG" \
   --vpc-id "$VPC_ID" --query 'GroupId' --output text)
 
 aws ec2 create-tags --region ap-northeast-2 --resources "$SG_ID" \
-  --tags Key=Name,Value=insightstock-sg
+  --tags Key=Name,Value=<SG_NAME>
 
 # SSH: 내 IP만 허용 (0.0.0.0/0 금지)
 aws ec2 authorize-security-group-ingress --region ap-northeast-2 \
@@ -73,7 +79,7 @@ SUBNET_ID=<기본 VPC의 서브넷 ID 중 하나>   # 예: describe-subnets로 �
 aws ec2 run-instances --region ap-northeast-2 \
   --image-id "$AMI_ID" \
   --instance-type t3.small \
-  --key-name insightstock-key \
+  --key-name <KEY_NAME> \
   --security-group-ids "$SG_ID" \
   --subnet-id "$SUBNET_ID" \
   --associate-public-ip-address \
@@ -257,7 +263,7 @@ aws ec2 delete-security-group --region ap-northeast-2 --group-id <SG_ID>
 # Elastic IP도 반드시 해제한다 - 인스턴스를 종료해도 Elastic IP는 자동으로 사라지지 않고,
 # 해제하기 전까지 계속 과금된다 (12절)
 aws ec2 describe-addresses --region ap-northeast-2 \
-  --filters Name=tag:Name,Values=insightstock-eip --query 'Addresses[0].AllocationId' --output text
+  --filters Name=tag:Name,Values=<EIP_TAG> --query 'Addresses[0].AllocationId' --output text
 aws ec2 release-address --region ap-northeast-2 --allocation-id <ALLOCATION_ID>
 ```
 
@@ -568,7 +574,7 @@ aws ec2 wait instance-running --region ap-northeast-2 --instance-ids <INSTANCE_I
 
 # 2. 할당 (Name 태그를 붙여 나중에 찾기 쉽게 한다)
 aws ec2 allocate-address --region ap-northeast-2 --domain vpc \
-  --tag-specifications 'ResourceType=elastic-ip,Tags=[{Key=Name,Value=insightstock-eip}]'
+  --tag-specifications 'ResourceType=elastic-ip,Tags=[{Key=Name,Value=<EIP_TAG>}]'
 # → AllocationId, PublicIp 기록
 
 # 3. 인스턴스에 연결
@@ -589,7 +595,7 @@ npx vercel --prod --yes
 
 ```bash
 aws ec2 describe-addresses --region ap-northeast-2 \
-  --filters Name=tag:Name,Values=insightstock-eip \
+  --filters Name=tag:Name,Values=<EIP_TAG> \
   --query 'Addresses[0].[PublicIp,AllocationId,InstanceId]' --output text
 ```
 
@@ -1387,6 +1393,21 @@ systemctl start insightstock-backend`로 8082에 기동 → 헬스체크 `UP` �
   들어 있어 패턴에 걸린다. 대상 프로세스는 죽지만 뒤따르는 명령이 실행되지 않는다.
   `pkill -f '[a]pp-v2.jar'`처럼 쓴다. 15절 6단계의 `pkill -f 'SERVER_PORT=8081'`도 같은 형태이니
   주의할 것(그리고 systemd가 띄운 인스턴스는 `pkill`이 아니라 `systemctl stop`으로 내린다).
+
+## 24. 운영 DB/ES에 직접 접속할 때 — SSH 터널
+
+5432/9200은 외부에 열지 않으므로, 로컬에서 운영 DB나 ES를 직접 봐야 할 때는 SSH 터널로 EC2의
+`127.0.0.1` 포트를 로컬로 끌어온다. 로컬 compose가 5432/9200을 쓰고 있을 수 있어 로컬 쪽 포트는
+15432/19200으로 띄운다. 운영에서 실측하지 않은 절차다.
+
+```bash
+# 터미널 A: 터널 유지(-N: 원격 명령 없이 포워딩만)
+ssh -i "<PEM_PATH>" -N -L 15432:127.0.0.1:5432 -L 19200:127.0.0.1:9200 ec2-user@insightstock.site
+
+# 터미널 B
+psql -h 127.0.0.1 -p 15432 -U <USER> -d insight_stock
+curl -s "http://127.0.0.1:19200/_cluster/health?pretty"
+```
 
 ## 알려진 제약 / 다음 단계 후보
 

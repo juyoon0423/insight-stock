@@ -1,6 +1,6 @@
 # 진행 상황 히스토리 (Progress Log)
 
-이 문서는 [docs/progress.md](./progress.md)에서 분리된 상세 작업 히스토리
+이 문서는 [docs/progress.md](../progress.md)에서 분리된 상세 작업 히스토리
 아카이브다(2026-07-27 분리, 당시 1,847줄까지 늘어난 progress.md를 얇게
 재작성하며 기존 서술형 기록 전체를 그대로 옮겨왔다 - 내용 요약/삭제 없음).
 새 세션은 `progress.md`부터 읽고, 각 단계의 "무엇을 왜 어떻게 했는지" 배경
@@ -17,11 +17,11 @@
 - **Open DART API 탐색** — list(공시검색)/document(공시원문) API를 실제로 호출해보고
   응답 구조, 함정(원문 없는 공시의 `status=014`, well-formed하지 않은 XML, 문서 크기
   편차 1,591자~123,413자, 표 flatten 시 라벨-값 관계 붕괴)을 확인했다.
-  → [docs/dart-findings.md](./dart-findings.md), 탐색에 쓴 스크립트는 `tests/exploration/`
+  → [docs/dart-findings.md](../dart-findings.md), 탐색에 쓴 스크립트는 `tests/exploration/`
 - **ERD 설계** — `companies` / `disclosures` / `chunks` 3테이블 구조와 설계 배경
   (ElasticSearch+pgvector 이중 저장/RRF, `document_status` 기반 배치 재시작,
   `report_nm` 기반 청킹 전략 분기)을 정리했다.
-  → [docs/erd.md](./erd.md)
+  → [docs/erd.md](../erd.md)
 - **로컬 Docker 개발 환경** — pgvector 포함 PostgreSQL + Nori 플러그인 포함
   Elasticsearch를 `docker-compose`로 구성. 데이터는 named volume으로 유지.
 - **Spring Boot 백엔드 뼈대** — Java 17 / Spring Boot 3.5.16 / Gradle. DB 접속 정보는
@@ -414,7 +414,7 @@
   content 완전 동일, 그중 65%가 500자 이상)와 원인(전량 `chunk_source=SECTION`
   이라 슬라이딩 윈도우 오버랩 버그가 아니라 일괄신고/다회차 발행 같은 공시
   업무 관행이 원인)을 실측으로 확인한 뒤 대응했다. 상세 원인 분석과 3가지
-  반복 패턴은 [dart-findings.md 2-10](./dart-findings.md)에 기록.
+  반복 패턴은 [dart-findings.md 2-10](../dart-findings.md)에 기록.
 
   대응은 `HybridSearchService`에서 RRF 융합 후(content가 있어야 중복 판정이
   가능해서 hydrate 순서를 top-K로 자르기 전으로 변경) content 정규화 완전
@@ -910,7 +910,7 @@
   **결론**: 이 데이터셋에서는 BM25가 강하고, "하이브리드가 항상 키워드 이상"이라는
   가정은 성립하지 않는다 - HNSW(성공)/pg_trgm(실패) 사례로 이미 확인했던 "검색
   전략은 실측 없이는 모른다"는 교훈이 하이브리드 검색 설계에도 동일하게 적용됨.
-  상세 수치·해석 전체는 [docs/search-quality-eval.md](./search-quality-eval.md),
+  상세 수치·해석 전체는 [docs/search-quality-eval.md](../search-quality-eval.md),
   형태소 분석 검증 과정은 dart-findings.md 2-13 참고. 자연히 이어지는 질문
   ("이 도메인에서 벡터/하이브리드가 정말 필요한가")은 아직 결론 내리지 않고
   다음 논의로 남김.
@@ -952,7 +952,7 @@
   MRR을 Recall@20과 혼동해 실제보다 극적으로("1.000") 잘못 인용했다가, 원본 로그와
   즉시 대조해 바로잡았다 - "환각 제어"가 핵심 가치인 프로젝트에서 측정 결과
   해석 과정 자체도 예외가 아니라는 원칙을 재확인한 사례. 상세는
-  [docs/search-quality-eval.md](./search-quality-eval.md) 7~9절 참고.
+  [docs/search-quality-eval.md](../search-quality-eval.md) 7~9절 참고.
 
 ## 2. 현재 프로젝트 상태 요약
 
@@ -1075,7 +1075,7 @@ cd backend
 curl http://localhost:8080/actuator/health   # {"status":"UP"}
 ```
 
-자세한 확인 명령(psql `\dt`, Elasticsearch 플러그인 확인 등)은 루트 [README.md](../README.md) 참고.
+자세한 확인 명령(psql `\dt`, Elasticsearch 플러그인 확인 등)은 루트 [README.md](../../README.md) 참고.
 
 ### API 명세 (프론트엔드 개발 참고용)
 
@@ -1609,7 +1609,7 @@ Claude Code에서 `/clear`로 새 세션을 시작한 뒤, 아래 순서로 문�
 현재 데이터 규모: `companies` 118,535건 / `disclosures` 3,991건 / `chunks`
 173,035건(전량 임베딩 완료). 예산 $4.93 중 $2.2268 사용, 남은 약 $2.70.
 
-**검색 품질 측정 사이클 요약(상세: 위 1절, [docs/search-quality-eval.md](./search-quality-eval.md)
+**검색 품질 측정 사이클 요약(상세: 위 1절, [docs/search-quality-eval.md](../search-quality-eval.md)
 전체)**: 정형 12개 벤치마크에서 "미스매치엔 벡터가 유리할 것"이라는 가설과
 반대로 키워드가 가장 강하게 나왔는데(벡터 Recall@20 0.083), 이 벤치마크 자체가
 corp_code+report_nm 유일성 위주로 뽑히다 보니 정형 서식 문서로 쏠린 선택
@@ -1668,7 +1668,7 @@ dev` 순서로 띄우면 된다.
   구현하지 않기로 결정**(표본 부족/분기 기준 불명확/질의 시점 문서 유형을
   모르는 근본 난제 - 근거는 docs/search-quality-eval.md 10절). 이 사이클은
   완전히 종료 - 재논의 트리거(더 큰 표본 재확인 또는 실사용 품질 문제 관찰)만
-  남김. 상세: [docs/search-quality-eval.md](./search-quality-eval.md) 전체,
+  남김. 상세: [docs/search-quality-eval.md](../search-quality-eval.md) 전체,
   위 1절 참고.
 - AWS 배포 + 무중단 배포
 - **감사보고서/연결감사보고서 ZIP 내부 파일명 불일치 조사** — 4절에 기록된 미해결
@@ -1960,7 +1960,7 @@ dev` 순서로 띄우면 된다.
   전체 회귀 통과.
 
 **이로써 4단계(알림) 백엔드가 완성됐다.** 다음은 프론트엔드(헤더 배지 + 알림
-목록, Playwright 검증) - 상세는 [docs/progress.md](./progress.md)의 "다음
+목록, Playwright 검증) - 상세는 [docs/progress.md](../progress.md)의 "다음
 세션 시작점" 참고.
 
 **같은 세션에서 문서 구조도 재정리했다**: `docs/progress.md`가 1,847줄까지
@@ -2111,14 +2111,14 @@ user-data 스크립트) → `1a070de`(문서 공백 보완, 프론트엔드 `.en
   다시 볼 때 "Claude Code가 t3.small을 측정해서 골랐다"고 오해하지 않도록
   출처를 분명히 남긴다).
 
-- **보안 그룹 + 키페어 세팅** — `insightstock-sg`(`<SECURITY_GROUP_ID>`)를
+- **보안 그룹 + 키페어 세팅** — `<SG_NAME>`(`<SECURITY_GROUP_ID>`)를
   새로 만들어 SSH(22)는 본인 퍼블릭 IP(`/32`)만 허용(`0.0.0.0/0` 금지),
   HTTP(80)/HTTPS(443)는 전체 허용, 8080(백엔드 API)도 이 시점엔 검증
   편의를 위해 전체 허용해뒀다(문서에 "임시로만, 나중에 Nginx 뒤로 감출
   예정"이라고 명시 - 실제로 다음 세션인 9절에서 그대로 제거됨). DB(5432)/
   ES(9200)는 처음부터 보안 그룹에 아예 열지 않았다 - EC2 내부 docker
   네트워크에서만 접근하면 충분하기 때문. 키페어는 이미 생성돼 있던
-  `insightstock-key`를 그대로 썼다.
+  `<KEY_NAME>`를 그대로 썼다.
 
 - **EC2 인스턴스 생성 + user-data 자동화** — Amazon Linux 2023 최신 AMI를
   `describe-images`로 조회해 `run-instances`(t3.small, 태그
@@ -2308,7 +2308,7 @@ CORS 설정 → 실물 브라우저 검증까지 이어갔다. 커밋은 `ac27b6
 **이로써 EC2 백엔드가 Nginx 뒤로 정리되고, Vercel 프론트엔드가 실제
 브라우저에서 Mixed Content 없이 끝까지 동작하는 상태로 배포됐다.** 남은
 제약(무중단 배포 미착수, jar 자동 기동 안 됨, Elastic IP 미사용, 도메인/TLS
-미적용, Vercel 프록시는 임시 우회)은 [docs/progress.md](./progress.md)의
+미적용, Vercel 프록시는 임시 우회)은 [docs/progress.md](../progress.md)의
 "다음 세션 논의거리"에 정리했다.
 
 ## 10. 2026-07-31 세션 — 무중단 배포(ShedLock + Blue-Green) 실물 검증 + t3.medium 리사이즈 실증
@@ -2625,4 +2625,4 @@ CI(11절)까지 끝난 뒤 로드맵 다음 단계로 부하테스트를 시작�
 **이로써 무중단 배포(Blue-Green + ShedLock)가 수동 절차 기준으로 실물
 검증까지 완료됐다.** 자동화(스크립트 하나로 묶기)는 의도적으로 다음
 단계로 미뤘다. 인스턴스 크기(t3.medium 유지 여부)와 정지 여부는
-[docs/progress.md](./progress.md)의 최신 상태를 확인할 것.
+[docs/progress.md](../progress.md)의 최신 상태를 확인할 것.

@@ -2,7 +2,7 @@
 
 마지막 업데이트: 2026-10-13 (프롬프트 보강, top-K 20 실험, EC2 로그인 제한·systemd 반영)
 
-**상세 히스토리는 [docs/progress-log.md](./progress-log.md) 참고** — 각 단계를
+**상세 히스토리는 [docs/archive/progress-log.md](./archive/progress-log.md) 참고** — 각 단계를
 왜/어떻게 했는지, 실측 검증 결과, 트러블슈팅 전부 그 문서에 있다. 이 문서는
 새 세션을 빠르게 시작하기 위한 요약만 남긴다.
 
@@ -291,7 +291,7 @@ EC2 없이 할 수 있는 것은 끝냈다. **다만 그 B 변경분은 아직 E
 | 분류 | 항목 |
 |---|---|
 | 운영 | 관측성(로그 수집, 알람, APM) / CD / blue-green 자동화 / t3.small 스왑 검증 / CI 캐싱 |
-| 보안 | refresh 토큰(14일, localStorage, 서버 무효화 불가 - 의도적 결정) 회전·무효화 / `docker-compose.yml`이 5432·9200을 모든 인터페이스에 공개(보안 그룹이 유일한 방어선) (리뷰) / `/api/v1/companies`의 `q` 길이 상한 없음 (리뷰) / `WebConfig` CORS 허용 메서드 수동 관리 |
+| 보안 | refresh 토큰(14일, localStorage, 서버 무효화 불가 - 의도적 결정) 회전·무효화 / ~~`docker-compose.yml`이 5432·9200을 모든 인터페이스에 공개~~ - 저장소 설정은 `127.0.0.1` 바인딩으로 수정(2026-10-27). 운영 서버에는 아직 반영하지 않아 그 전까지는 보안 그룹이 유일한 방어선 (리뷰) / `/api/v1/companies`의 `q` 길이 상한 없음 (리뷰) / `WebConfig` CORS 허용 메서드 수동 관리 |
 | 스케줄러 | 청킹/임베딩/corpCode 스케줄러를 켜기 전 `@SchedulerLock` 추가 / `collectToday()`가 오늘 날짜만 조회해 EC2를 꺼둔 날의 공시는 다시 켜도 수집되지 않음 (리뷰) |
 | 성능 | Hikari 풀 50 재조정 / 검색 1건이 DB 커넥션을 2개 쓸 가능성 - `search()`의 읽기 전용 트랜잭션이 요청 스레드에서 커넥션을 잡은 채 ES·OpenAI를 기다리고 벡터 태스크가 하나를 더 쓴다. loadtest.md의 "벡터 태스크만 커넥션을 점유"와 다르다 (리뷰, 추정 - 실측 필요) |
 | 알림 | 목록 페이지네이션 / `idx_notification_user_unread` 실측 |
@@ -542,7 +542,7 @@ EC2 청크 0건 / 현대모비스 배당금 질문의 원인(검색 실패로 �
   stop→start를 해서 IP가 그대로인 것, 그리고 Vercel을 건드리지 않고도
   프론트→백엔드 호출이 다시 정상 동작하는 것까지 실측으로 확인했다(절차와
   검증 결과는 docs/deploy.md 12절). IP 값은 문서에 적지 않기로 했다 -
-  `describe-addresses`에 Name 태그 `insightstock-eip`로 조회한다.
+  `describe-addresses`에 Name 태그 `<EIP_TAG>`로 조회한다.
   **남은 트레이드오프(비용)**: 2024-02 이후 AWS는 모든 퍼블릭 IPv4에
   시간당 $0.005를 과금하므로 Elastic IP는 인스턴스를 꺼둔 동안에도 요금이
   나간다(월 약 $3.6). 이전에는 꺼두면 IP 비용이 0이었으니 평소 꺼두는
@@ -662,5 +662,5 @@ cd frontend && npm run dev   # http://localhost:3000
 
 자세한 확인 명령(psql, Elasticsearch 플러그인 확인 등)은 루트
 [README.md](../README.md) 참고. API 명세/폴더 구조/에러 코드 표 등 상세
-레퍼런스는 [docs/progress-log.md](./progress-log.md) 2절 "현재 프로젝트
+레퍼런스는 [docs/archive/progress-log.md](./archive/progress-log.md) 2절 "현재 프로젝트
 상태 요약"에 그대로 보존돼 있다.
