@@ -9,7 +9,9 @@ DART(전자공시시스템) 공시를 **하이브리드 검색(BM25 + 벡터 + R
 출처가 명시된 답변**을 생성하는 서비스.
 
 - **Live Demo**: https://frontend-steel-omega-0zye89ut4w.vercel.app
-- **시연 영상**: <!-- TODO: 영상 링크 -->
+  <!-- TODO: 영상 링크가 생기면 아래 줄의 링크를 채우고 이 주석을 풀어 목록 항목으로 되돌린다.
+  - **시연 영상**: (영상 링크)
+  -->
 - 백엔드(`https://insightstock.site`)는 비용 관리를 위해 평소에는 인스턴스를 꺼두므로, 데모
   화면은 열리더라도 검색/답변 요청은 응답하지 않을 수 있다. 서버가 꺼져 있을 때는 아래
   [성과 요약](#성과-요약)과 [관련 문서](#관련-문서)로 동작과 측정 결과를 확인할 수 있다.
@@ -20,9 +22,11 @@ DART(전자공시시스템) 공시를 **하이브리드 검색(BM25 + 벡터 + R
 
 <!-- TODO: 스크린샷 (예: docs/images/search.png, docs/images/answer.png) -->
 
+<!-- TODO: 10월 데이터 교체 후 확정된 질문 3개 + 거절 질문 1개를 넣고 이 주석을 풀어 섹션을 살린다.
 ## 이렇게 물어보세요
 
-<!-- TODO: 확정된 질문 3개 + 거절 질문 1개 -->
+(확정된 질문 3개 + 거절 질문 1개)
+-->
 
 ## 왜 만들었나
 
@@ -288,4 +292,3 @@ npm run dev                         # http://localhost:3000
 | [docs/ci.md](./docs/ci.md) | GitHub Actions 테스트 자동화 |
 | [docs/deploy.md](./docs/deploy.md) | AWS EC2 배포, Nginx/TLS, Blue-Green 무중단 배포, 데이터 이전 절차 |
 | [docs/progress.md](./docs/progress.md) | 현재 진행 상황 요약과 다음 할 일 |
-| [docs/progress-log.md](./docs/progress-log.md) | 단계별 상세 작업 히스토리 |
