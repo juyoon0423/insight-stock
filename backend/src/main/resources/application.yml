@@ -35,6 +35,12 @@ spring:
   elasticsearch:
     uris: http://localhost:9200
 
+scheduling:
+  # @Scheduled 배치 전체 스위치(scheduling.SchedulingConfig). 운영/bootRun은 켜 둔다.
+  # 수동 실행기(*ManualIT)는 @SpringBootTest(properties = "scheduling.enabled=false")로 끈다 -
+  # 컨텍스트만 띄워도 수집 배치가 돌아 대상 DB가 바뀌는 사고를 막기 위함.
+  enabled: true
+
 management:
   endpoints:
     web:
