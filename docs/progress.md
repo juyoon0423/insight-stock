@@ -2,7 +2,7 @@
 
 마지막 업데이트: 2026-10-13 (프롬프트 보강, top-K 20 실험, EC2 로그인 제한·systemd 반영)
 
-**상세 히스토리는 [docs/progress-log.md](./progress-log.md) 참고** — 각 단계를
+**상세 히스토리는 [docs/archive/progress-log.md](./archive/progress-log.md) 참고** — 각 단계를
 왜/어떻게 했는지, 실측 검증 결과, 트러블슈팅 전부 그 문서에 있다. 이 문서는
 새 세션을 빠르게 시작하기 위한 요약만 남긴다.
 
@@ -662,5 +662,5 @@ cd frontend && npm run dev   # http://localhost:3000
 
 자세한 확인 명령(psql, Elasticsearch 플러그인 확인 등)은 루트
 [README.md](../README.md) 참고. API 명세/폴더 구조/에러 코드 표 등 상세
-레퍼런스는 [docs/progress-log.md](./progress-log.md) 2절 "현재 프로젝트
+레퍼런스는 [docs/archive/progress-log.md](./archive/progress-log.md) 2절 "현재 프로젝트
 상태 요약"에 그대로 보존돼 있다.
