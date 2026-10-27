@@ -1,0 +1,91 @@
+# 전시회 시연 런북 (2026-11-04)
+
+졸업작품 전시회에서 노트북으로 InsightStock을 시연할 때 쓰는 당일 체크리스트다. 장소는 학교 건물
+안이고 학교 와이파이를 쓴다. 증상별 대응과 명령의 상세는 [demo-checklist.md](./demo-checklist.md)
+4절과 [deploy.md](./deploy.md)에 있다. 이 문서에는 비밀값, IP, 계정 정보를 적지 않는다.
+
+## 사용하는 도구
+
+```bash
+# 네트워크 점검 (읽기 전용 - 유료 API를 호출하지 않는다)
+scripts/demo-network-check.sh
+
+# 서버 제어 - 인스턴스 ID와 리전은 터미널에서 환경변수로 넘긴다
+export INSIGHTSTOCK_INSTANCE_ID=<INSTANCE_ID>
+export AWS_REGION=<REGION>
+scripts/demo-server.sh status | start | wait | stop
+```
+
+- `demo-network-check.sh` 판정: **가능**(종료 코드 0) / **주의**(1, 느리거나 일부 실패) / **불가**(2).
+- `demo-server.sh start`는 타입이 t3.medium이 아니면 바꿀지 묻는다. t3.small로 켜면 검색 중
+  인스턴스가 멈출 수 있으니 바꾼다(deploy.md 19절).
+
+## 알아 둘 것
+
+- **재부팅 후 서버는 스스로 올라온다.** docker → Postgres/Elasticsearch(`restart: unless-stopped`)
+  → systemd가 둘 다 healthy가 된 뒤 백엔드를 띄운다. Nginx도 자동 시작한다(deploy.md 22절, 실측
+  82초). SSH로 들어가 직접 띄우지 않는다.
+- **IP와 도메인은 바뀌지 않는다.** Elastic IP가 연결돼 있어 껐다 켜도 같은 주소다(deploy.md 12절).
+- **학교에서는 SSH가 안 된다.** 보안 그룹 22번은 등록한 IP만 허용한다. 서버 문제는 집에서 전날
+  끝내고 간다. 학교에서 꼭 필요하면 점검 스크립트 1번에 나온 공인 IP로 규칙을 갱신한다(deploy.md 1절).
+- **요청 제한은 IP 단위다.** 학교 와이파이를 쓰는 관람객이 판넬 QR로 접속하면 노트북과 같은 공인 IP로
+  묶여, 답변 요청이 합쳐서 분당 20회(burst 10)로 제한된다(deploy.md 20절). 429가 뜨면 몇 초 기다린다.
+- **첫 요청은 느리다.** 백엔드 기동 직후 첫 호출은 4~5초 걸린 기록이 있다. 시작 전에 한 번 눌러 둔다.
+
+## 11/3 (전날)
+
+- [ ] `scripts/demo-server.sh start` → `[PASS] health 200`이 나올 때까지 기다린다. 서버는 켜 둔 채로 간다.
+- [ ] 시연 화면에서 시연 질문(아래 표)을 전부 한 번씩 실행한다(리허설).
+- [ ] 학교 와이파이에서 `scripts/demo-network-check.sh`를 실행한다. 가능하면 전시 장소에서 한다.
+      인증 페이지가 있으면 로그인 방법(학번 로그인 등)을 메모해 둔다.
+- [ ] 휴대폰 핫스팟으로도 `scripts/demo-network-check.sh`를 실행해 **가능**이 나오는지 확인한다.
+- [ ] 시연 영상을 노트북에 **로컬 파일**로 저장하고, 인터넷을 끈 상태에서 재생되는지 확인한다.
+- [ ] 노트북 설정
+  - [ ] 잠자기 끄기(시스템 설정 → 배터리/잠금 화면 → 디스플레이 끄기 "안 함", 전원 어댑터 연결 시).
+        당일에는 터미널에서 `caffeinate -dis`를 켜 두면 창을 닫을 때까지 잠들지 않는다.
+  - [ ] 화면 보호기 끄기
+  - [ ] 알림 끄기(집중 모드 → 방해금지)
+  - [ ] 충전기와 멀티탭을 챙긴다.
+
+## 11/4 (당일) 아침
+
+- [ ] `scripts/demo-server.sh status` → `running` / `t3.medium`
+- [ ] `scripts/demo-server.sh wait` → `[PASS] health 200`
+- [ ] 학교 와이파이에 접속하고 인증 페이지를 통과한다(브라우저로 아무 `http://` 사이트를 열면 뜬다).
+- [ ] `scripts/demo-network-check.sh` → **가능**. **주의**면 핫스팟을 켜 둔 채로 시작한다.
+- [ ] 브라우저 탭을 미리 열어 둔다.
+  - [ ] 시연 화면(README의 Live Demo 주소) - 질문 하나를 실행해 둔다
+  - [ ] GitHub README
+  - [ ] 시연 영상 파일(반복 재생 설정)
+
+## 문제가 생겼을 때 (순서대로)
+
+| 단계 | 넘어가는 기준 | 할 일 |
+|---|---|---|
+| 1. 학교 와이파이 | 화면이 **10초 넘게 응답이 없거나**, 연속 2번 "서버에 연결할 수 없습니다"가 나오면 2단계로 | 먼저 `scripts/demo-network-check.sh` 실행. 인증 페이지 FAIL이면 다시 로그인 |
+| 2. 휴대폰 핫스팟 | 핫스팟에서 점검 결과가 **불가**이거나, 같은 증상이 다시 나오면 3단계로 | 와이파이를 핫스팟으로 바꾸고 점검 스크립트를 다시 실행한다(약 1분) |
+| 3. 시연 영상 루프 | - | 영상 파일을 전체 화면으로 반복 재생하고, 말로 설명한다. GitHub README의 성과 요약을 함께 보여 준다 |
+
+- 두 네트워크 모두 인터넷·DNS·프론트는 PASS인데 **API만 FAIL**이면 네트워크가 아니라 서버 문제다.
+  `scripts/demo-server.sh status`로 상태를 보고, 바로 3단계로 넘어간다(학교에서는 SSH로 고칠 수 없다).
+- 답변만 실패하고 검색 화면은 되면 검색 화면으로 시연을 이어간다(demo-checklist.md 4절).
+
+## 시연 질문
+
+<!-- TODO: 10월 데이터 교체 후 확정한다. 측정에 쓴 문장 그대로 입력할 것(demo-checklist.md 2절). -->
+
+| # | 질문 | 기대 결과 |
+|---|---|---|
+| 1 | TODO | 정답 + 출처 |
+| 2 | TODO | 정답 + 출처 |
+| 3 | TODO | 정답 + 출처 |
+| 거절 | TODO | 고정 문구로 거절, 출처 0건 |
+
+## 끝난 뒤 (비용 정리)
+
+- [ ] `scripts/demo-server.sh stop` → 중지 확인(y) → 타입을 t3.small로 되돌릴지 확인(y).
+- [ ] `scripts/demo-server.sh status` → `stopped` / `t3.small`
+- [ ] AWS 콘솔에서 이번에 만든 EBS 스냅샷이나 AMI가 있으면 삭제한다(문서에 만든 기록은 없다).
+- [ ] Elastic IP는 해제하지 않는다. 해제하면 IP가 바뀌어 도메인 A 레코드를 다시 고쳐야 한다. 꺼 둔
+      동안에도 Elastic IP와 EBS 요금은 나간다(deploy.md 12절, 19절).
+- [ ] OpenAI 대시보드에서 당일 사용량을 확인한다.
