@@ -14,7 +14,7 @@ interface ResultPanelProps {
 export default function ResultPanel({ status, data, errorMessage, onRetry }: ResultPanelProps) {
   if (status === "idle") {
     return (
-      <p className="py-16 text-center text-sm text-zinc-400 dark:text-zinc-500">
+      <p className="py-16 text-center text-sm text-zinc-500 dark:text-zinc-500">
         DART 공시에 근거한 답변을 받아보세요. 답변에는 항상 출처가 함께 표시됩니다.
       </p>
     );
@@ -68,9 +68,9 @@ export default function ResultPanel({ status, data, errorMessage, onRetry }: Res
             <p className="flex items-center gap-1.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">
               <span aria-hidden="true">🔍</span> 관련 공시를 찾지 못했습니다
             </p>
-            <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
-              현재 국내 DART 공시 데이터를 기반으로 답변합니다. 해외 기업이나 수집 범위
-              밖의 정보는 답변할 수 없습니다.
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-500">
+              공시에 근거가 없는 질문(주가 예측, 해외 기업, 수집 기간 밖의 공시)에는 답하지
+              않습니다.
             </p>
           </div>
         )}

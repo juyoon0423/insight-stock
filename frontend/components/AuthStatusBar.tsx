@@ -32,20 +32,14 @@ export default function AuthStatusBar() {
             </button>
           </>
         ) : session.status === "anonymous" ? (
-          <>
-            <Link
-              href="/login"
-              className="text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-            >
-              로그인
-            </Link>
-            <Link
-              href="/signup"
-              className="font-medium text-zinc-900 transition-colors hover:underline dark:text-zinc-100"
-            >
-              회원가입
-            </Link>
-          </>
+          // 회원가입 링크는 전시(2026-11-04) 동안 숨긴다 - 관람객이 가입하면 운영 DB에 실제 이메일이
+          // 남기 때문. /signup 페이지와 로그인 화면 안의 가입 링크는 그대로 있다.
+          <Link
+            href="/login"
+            className="text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            로그인
+          </Link>
         ) : (
           // "initializing" - 조용한 refresh 시도 중, 잠깐이라 스켈레톤 없이 빈 공간으로 둔다.
           <span className="h-4" />

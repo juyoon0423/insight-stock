@@ -48,7 +48,7 @@ export default function Home() {
       <main className="w-full max-w-2xl px-4 py-10 sm:px-6">
         <header className="mb-8 text-center">
           <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">InsightStock</h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
             DART 공시에 근거해 답변합니다 — 모든 답변에는 출처가 함께 표시됩니다.
           </p>
           {USE_MOCK && (
@@ -58,7 +58,7 @@ export default function Home() {
           )}
           <Link
             href="/search"
-            className="mt-3 block text-xs text-zinc-400 transition-colors hover:text-zinc-600 dark:hover:text-zinc-300"
+            className="mt-3 block text-sm text-zinc-600 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-300"
           >
             🔍 하이브리드 검색이 어떻게 순위를 매기는지 보기
           </Link>
