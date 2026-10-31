@@ -62,6 +62,11 @@ export default function QuestionForm({ onSubmit, isLoading }: QuestionFormProps)
           {isLoading ? "답변 생성 중..." : "질문하기"}
         </button>
       </form>
+      {/* 운영 DB의 INDEXED 공시 접수일 범위(2026-10-31 조회: 7월 20~24일 3,715건, 10월 20~26일 2,547건).
+          색인 데이터를 추가하면 함께 고친다. */}
+      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+        수집 범위: 2026.07.20~24 · 2026.10.20~10.26 접수 공시
+      </p>
       <div className="mt-3 flex flex-wrap gap-2">
         {EXAMPLE_QUERIES.map(({ query: example, note }) => (
           <button
