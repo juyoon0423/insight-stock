@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 
 interface QuestionFormProps {
   onSubmit: (query: string) => void;
@@ -26,11 +26,18 @@ export const EXAMPLE_QUERIES: ExampleQuery[] = [
 
 export default function QuestionForm({ onSubmit, isLoading }: QuestionFormProps) {
   const [query, setQuery] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
+  // 버튼은 빈 입력에서도 눌리는 모양(군청 채움)으로 둔다. 비었거나 공백뿐이면 API를 부르지 않고
+  // 입력창으로 포커스만 옮긴다 - "무엇을 하면 되는지"를 비활성 버튼 대신 커서로 알려 준다.
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (isLoading) return;
     const trimmed = query.trim();
-    if (!trimmed || isLoading) return;
+    if (!trimmed) {
+      inputRef.current?.focus();
+      return;
+    }
     onSubmit(trimmed);
   }
 
@@ -42,50 +49,67 @@ export default function QuestionForm({ onSubmit, isLoading }: QuestionFormProps)
 
   return (
     <div>
-      <form onSubmit={handleSubmit} className="flex flex-col gap-2 sm:flex-row">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          // 백엔드 검증(질문 500자 이하)과 같은 값 - 넘겨서 400을 받기 전에 입력 단계에서 막는다.
-          maxLength={500}
-          // 예시는 운영 검색에서 정답 공시가 1위로 확인된 질문(2026-10-31) - 칩과 겹치지 않게 골랐다.
-          placeholder="DART 공시에 대해 질문해보세요 (예: 동아쏘시오홀딩스가 동아제약을 합병하는 목적은 무엇인가?)"
-          disabled={isLoading}
-          className="w-full flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500"
-        />
-        <button
-          type="submit"
-          disabled={isLoading || !query.trim()}
-          className="shrink-0 rounded-lg bg-zinc-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-        >
-          {isLoading ? "답변 생성 중..." : "질문하기"}
-        </button>
+      <form onSubmit={handleSubmit}>
+        <label htmlFor="question" className="mb-2 block text-sm font-semibold text-ink">
+          질문
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            ref={inputRef}
+            id="question"
+            name="question"
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            // 백엔드 검증(질문 500자 이하)과 같은 값 - 넘겨서 400을 받기 전에 입력 단계에서 막는다.
+            maxLength={500}
+            // 비밀번호 관리자가 이 칸을 로그인 칸으로 오인하지 않게
+            autoComplete="off"
+            aria-describedby="question-scope"
+            // 예시는 운영 검색에서 정답 공시가 1위로 확인된 질문(2026-10-31) - 칩과 겹치지 않게 골랐다.
+            placeholder="예: 동아쏘시오홀딩스가 동아제약을 합병하는 목적은 무엇인가?"
+            disabled={isLoading}
+            className="field-input min-w-0 flex-1"
+          />
+          <button type="submit" disabled={isLoading} className="btn-primary">
+            {isLoading ? "답변 생성 중…" : "질문하기"}
+          </button>
+        </div>
       </form>
       {/* 운영 DB의 INDEXED 공시 접수일 범위(2026-10-31 조회: 7월 20~24일 3,715건, 10월 20~26일 2,547건).
           색인 데이터를 추가하면 함께 고친다. */}
-      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-        수집 범위: 2026.07.20~24 · 2026.10.20~10.26 접수 공시
+      <p id="question-scope" className="mt-2 text-sm tabular-nums text-ink-muted">
+        수집 범위: 2026.07.20~24, 2026.10.20~26 접수 공시
       </p>
-      <div className="mt-3 flex flex-wrap gap-2">
+
+      {/* 예시 질문: 칩 대신 줄 단위 목록 - 긴 문장도 한 줄씩 읽히고, 누를 수 있는 영역이 넓다 */}
+      <h2 className="mt-8 text-sm font-semibold text-ink">예시 질문</h2>
+      <ul className="mt-2 border-t border-line">
         {EXAMPLE_QUERIES.map(({ query: example, note }) => (
-          <button
-            key={example}
-            type="button"
-            disabled={isLoading}
-            onClick={() => handleExampleClick(example)}
-            // 긴 문장은 좁은 화면에서 칩 안에서 줄바꿈되므로 완전한 알약 모양 대신 rounded-2xl + 왼쪽 정렬.
-            className="rounded-2xl border border-zinc-300 px-3 py-1 text-left text-xs text-zinc-700 transition-colors hover:border-zinc-400 hover:text-zinc-900 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
-          >
-            {example}
-            {note && (
-              <span className="ml-1.5 rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
-                {note}
+          <li key={example} className="border-b border-line">
+            <button
+              type="button"
+              disabled={isLoading}
+              onClick={() => handleExampleClick(example)}
+              className="group flex w-full items-baseline justify-between gap-3 px-2 py-3 text-left text-[0.9375rem] text-ink transition-colors hover:bg-wash disabled:cursor-not-allowed disabled:text-ink-subtle disabled:hover:bg-transparent"
+            >
+              <span className="text-pretty">{example}</span>
+              <span className="flex shrink-0 items-baseline gap-3">
+                {note && (
+                  <span className="rounded-sm border border-line-strong px-1.5 text-xs text-ink-muted">{note}</span>
+                )}
+                {/* 누를 수 있는 줄이라는 표시. 화면 낭독기는 버튼 이름만 읽도록 숨긴다 */}
+                <span
+                  aria-hidden="true"
+                  className="text-ink-subtle transition-transform group-hover:translate-x-0.5 group-hover:text-ink"
+                >
+                  →
+                </span>
               </span>
-            )}
-          </button>
+            </button>
+          </li>
         ))}
-      </div>
+      </ul>
     </div>
   );
 }

@@ -5,6 +5,9 @@ interface SourceCardProps {
   index: number;
 }
 
+// 근거 공시 하나 = 각주 하나. 카드 대신 왼쪽 선과 번호로 표현한다(docs/frontend-design.md 3-4절).
+// 답변 속 번호(<a href="#source-N">)를 누르면 브라우저 기본 앵커 이동으로 여기에 오고,
+// target: 변형(CSS :target)이 이 항목에 배경색만 더한다 - 스크롤 방식과 JavaScript는 그대로다.
 export default function SourceCard({ source, index }: SourceCardProps) {
   return (
     <a
@@ -12,25 +15,30 @@ export default function SourceCard({ source, index }: SourceCardProps) {
       href={source.dartUrl}
       target="_blank"
       rel="noopener noreferrer"
-      className="group flex scroll-mt-24 flex-col gap-1 rounded-lg border border-zinc-200 bg-white p-4 transition-colors hover:border-blue-400 hover:bg-blue-50/50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-blue-500 dark:hover:bg-blue-950/30"
+      className="group block scroll-mt-24 break-keep wrap-anywhere rounded-r-md border-l-2 border-line py-3 pl-4 pr-3 transition-colors hover:border-evidence hover:bg-surface target:border-evidence target:bg-evidence-tint"
     >
-      <div className="flex items-center gap-2">
-        <span className="flex h-5 min-w-5 items-center justify-center rounded bg-blue-100 px-1 text-[11px] font-semibold text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
+      <span className="flex items-baseline gap-2">
+        <span
+          aria-hidden="true"
+          className="cite-badge group-target:bg-evidence group-target:text-on-evidence"
+        >
           {index}
         </span>
-        <span className="font-semibold text-zinc-900 dark:text-zinc-100">{source.corpName}</span>
-      </div>
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        {source.reportNm}
-        {source.sectionTitle && ` · ${source.sectionTitle}`}
-      </p>
-      <span className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-blue-600 group-hover:underline dark:text-blue-400">
+        <span className="font-semibold text-ink">
+          <span className="sr-only">출처 {index}: </span>
+          {source.corpName}
+        </span>
+      </span>
+      <span className="mt-1 block text-sm text-ink-muted">{source.reportNm}</span>
+      {source.sectionTitle && <span className="block text-sm text-ink-subtle">{source.sectionTitle}</span>}
+      <span className="mt-1.5 inline-flex items-center gap-1 text-sm font-semibold text-evidence underline-offset-2 group-hover:underline">
         DART 원문 보기
+        <span className="sr-only">(새 창)</span>
         <svg
           xmlns="http://www.w3.org/2000/svg"
           viewBox="0 0 20 20"
           fill="currentColor"
-          className="h-3 w-3"
+          className="h-3.5 w-3.5"
           aria-hidden="true"
         >
           <path

@@ -15,7 +15,9 @@
   --line: #d6dbe2;
   /* 입력창 테두리처럼 "경계가 보여야 하는" UI 선 - 흰 바탕 대비 3:1 이상 */
   --line-strong: #8a94a3;
-  /* 강조색은 이것 하나 - 출처 번호, 출처 링크, 주 버튼에만 쓴다 */
+  /* 줄 단위 목록(예시 질문)의 hover 배경 - 강조색이 아닌 중립색 */
+  --wash: #e9edf2;
+  /* 강조색은 이것 하나 - 출처(번호, 목록, 링크)와 화면의 주요 버튼에만 쓴다 */
   --evidence: #1d3f94;
   --evidence-strong: #162f70;
   --evidence-tint: #e7ecf7;
@@ -39,6 +41,7 @@
     --ink-subtle: #8c97a6;
     --line: #2a3441;
     --line-strong: #5d6878;
+    --wash: #1d2530;
     --evidence: #9db4f5;
     --evidence-strong: #c3d1fa;
     --evidence-tint: #1e2a45;
@@ -60,6 +63,7 @@
   --color-ink-subtle: var(--ink-subtle);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
+  --color-wash: var(--wash);
   --color-evidence: var(--evidence);
   --color-evidence-strong: var(--evidence-strong);
   --color-evidence-tint: var(--evidence-tint);
@@ -156,12 +160,41 @@
     background: var(--evidence-strong);
     border-color: var(--evidence-strong);
   }
-  /* 비활성: 흐리게 만드는 대신 테두리만 남겨 "아직 누를 수 없음"을 모양으로 보여 준다 */
+  /* 비활성(요청 처리 중): 군청 채움은 유지하고 살짝만 흐리게 한다.
+     예전처럼 테두리만 남기면 첫 화면에서 주요 버튼이 꺼진 것처럼 보였다(docs/frontend-design.md 8절). */
   .btn-primary:disabled {
-    cursor: not-allowed;
-    background: transparent;
-    border-color: var(--line-strong);
-    color: var(--ink-subtle);
+    cursor: progress;
+    opacity: 0.7;
+  }
+
+  /* 출처 번호 배지 - 답변 본문, 근거 공시 목록, 홈의 답변 미리보기가 같은 모양을 쓴다.
+     line-height: 1로 배지 글자 높이를 줄의 기본 높이(strut) 안에 두어, 배지가 있는 줄만 줄 간격이 벌어지지 않게 한다.
+     본문 안에서 위첨자처럼 올리는 것은 vertical-align 대신 relative 위치 이동으로 한다(줄 높이 계산에 영향 없음). */
+  .cite-badge {
+    line-height: 1;
+    display: inline-flex;
+    height: 1.25rem;
+    min-width: 1.25rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.125rem;
+    background: var(--evidence-tint);
+    padding: 0 0.25rem;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--evidence);
+  }
+  /* 본문 속 배지: 원자 인라인(inline-flex)이면 앞 글자와 배지 사이에서 줄이 바뀌어 배지만 다음 줄로 떨어진다.
+     일반 인라인으로 두면 word-break: keep-all이 "다"와 숫자 사이의 줄바꿈을 막아 배지가 앞 글자에 붙어 다닌다.
+     높이는 위아래 padding으로 20px 안팎을 맞추고(인라인 padding은 줄 높이에 영향 없음), 위첨자처럼 4px 올린다. */
+  .cite-badge-inline {
+    display: inline;
+    height: auto;
+    min-width: 0;
+    padding: 0.125rem 0.3125rem;
+    position: relative;
+    top: -0.25rem;
   }
 
   .btn-secondary {
