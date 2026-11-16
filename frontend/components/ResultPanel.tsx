@@ -11,26 +11,21 @@ interface ResultPanelProps {
   onRetry: () => void;
 }
 
+// 화면 구성 근거: docs/frontend-design.md 3-4절 - 답변은 "각주가 달린 문서"처럼,
+// 넓은 화면(lg 이상)에서는 본문과 근거 공시(각주 목록)를 2단으로 나란히 둔다.
 export default function ResultPanel({ status, data, errorMessage, onRetry }: ResultPanelProps) {
-  if (status === "idle") {
-    return (
-      <p className="py-16 text-center text-sm text-zinc-500 dark:text-zinc-500">
-        DART 공시에 근거한 답변을 받아보세요. 답변에는 항상 출처가 함께 표시됩니다.
-      </p>
-    );
-  }
+  // 질문 전에는 아무것도 그리지 않는다 - 예전 안내 문구("답변에는 항상 출처가 함께 표시됩니다")는
+  // 페이지 제목 아래 설명과 같은 말이라 뺐다(docs/frontend-design.md 8절).
+  if (status === "idle") return null;
 
   if (status === "loading") {
     return (
-      <div className="animate-pulse space-y-6 py-6" aria-busy="true" aria-label="답변 생성 중">
-        <div className="space-y-2 rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
-          <div className="h-4 w-full rounded bg-zinc-200 dark:bg-zinc-800" />
-          <div className="h-4 w-11/12 rounded bg-zinc-200 dark:bg-zinc-800" />
-          <div className="h-4 w-2/3 rounded bg-zinc-200 dark:bg-zinc-800" />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="h-20 rounded-lg bg-zinc-200 dark:bg-zinc-800" />
-          <div className="h-20 rounded-lg bg-zinc-200 dark:bg-zinc-800" />
+      <div role="status" className="mt-12 max-w-2xl">
+        <span className="sr-only">답변을 만드는 중입니다…</span>
+        <div className="animate-pulse space-y-3" aria-hidden="true">
+          <div className="h-4 w-full rounded-sm bg-line" />
+          <div className="h-4 w-11/12 rounded-sm bg-line" />
+          <div className="h-4 w-2/3 rounded-sm bg-line" />
         </div>
       </div>
     );
@@ -38,12 +33,9 @@ export default function ResultPanel({ status, data, errorMessage, onRetry }: Res
 
   if (status === "error") {
     return (
-      <div className="mt-6 flex flex-col items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900/50 dark:bg-red-950/30">
-        <p className="text-sm text-red-700 dark:text-red-400">{errorMessage}</p>
-        <button
-          onClick={onRetry}
-          className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
-        >
+      <div role="alert" className="alert-danger mt-12 flex max-w-2xl flex-col items-start gap-3">
+        <p>{errorMessage}</p>
+        <button type="button" onClick={onRetry} className="btn-secondary">
           다시 시도
         </button>
       </div>
@@ -55,41 +47,48 @@ export default function ResultPanel({ status, data, errorMessage, onRetry }: Res
   const hasSources = data.sources.length > 0;
 
   return (
-    <div className="space-y-6 py-6">
-      <div
-        className={
-          hasSources
-            ? "rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
-            : "rounded-lg border border-dashed border-zinc-300 bg-zinc-50 p-5 dark:border-zinc-700 dark:bg-zinc-900/50"
-        }
-      >
+    <section
+      aria-labelledby="answer-heading"
+      className="mt-12 grid gap-10 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-12"
+    >
+      <article className="min-w-0 max-w-2xl">
+        <h2 id="answer-heading" className="mb-3 text-sm font-semibold text-ink-muted">
+          답변
+        </h2>
+        <div className="rounded-md border border-line bg-surface px-5 py-5 sm:px-6">
+          {/* citedNumbers가 없는 구버전 백엔드 응답이면 빈 배열로 - 배지 없이 본문만 보인다 */}
+          <AnswerText answer={data.answer} citedNumbers={data.citedNumbers ?? []} />
+        </div>
+
         {!hasSources && (
-          <div className="mb-3">
-            <p className="flex items-center gap-1.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              <span aria-hidden="true">🔍</span> 관련 공시를 찾지 못했습니다
-            </p>
-            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-500">
+          // 빈 상태는 분위기보다 방향 - 왜 답하지 않았는지와 다음에 할 일을 같이 보여 준다.
+          <div className="mt-4 border-l-2 border-line-strong pl-4 text-sm">
+            <p className="font-semibold text-ink">관련 공시를 찾지 못했습니다</p>
+            <p className="mt-1 text-ink-muted">
               공시에 근거가 없는 질문(주가 예측, 해외 기업, 수집 기간 밖의 공시)에는 답하지
               않습니다.
             </p>
+            <p className="mt-1 text-ink-muted">
+              공시에 나온 회사명과 사건(예: 합병, 공급계약, 주식 소각)을 넣어 다시 물어보세요.
+            </p>
           </div>
         )}
-        {/* citedNumbers가 없는 구버전 백엔드 응답이면 빈 배열로 - 배지 없이 본문만 보인다 */}
-        <AnswerText answer={data.answer} citedNumbers={data.citedNumbers ?? []} />
-      </div>
+      </article>
 
       {hasSources && (
-        <div>
-          <h2 className="mb-3 text-sm font-semibold text-zinc-500 dark:text-zinc-400">
-            출처 {data.sources.length}건
+        <aside aria-labelledby="sources-heading" className="min-w-0">
+          <h2 id="sources-heading" className="mb-3 text-sm font-semibold text-ink-muted">
+            근거 공시 <span className="tabular-nums">{data.sources.length}</span>건
           </h2>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <ol className="space-y-2">
             {data.sources.map((source, i) => (
-              <SourceCard key={`${source.rceptNo}-${i}`} source={source} index={i + 1} />
+              <li key={`${source.rceptNo}-${i}`}>
+                <SourceCard source={source} index={i + 1} />
+              </li>
             ))}
-          </div>
-        </div>
+          </ol>
+        </aside>
       )}
-    </div>
+    </section>
   );
 }
