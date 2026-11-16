@@ -1,6 +1,6 @@
 # 진행 상황 (Progress)
 
-마지막 업데이트: 2026-10-13 (프롬프트 보강, top-K 20 실험, EC2 로그인 제한·systemd 반영)
+마지막 업데이트: 2026-11-16 (프론트 화면 리팩토링, PR #2)
 
 **상세 히스토리는 [docs/archive/progress-log.md](./archive/progress-log.md) 참고** — 각 단계를
 왜/어떻게 했는지, 실측 검증 결과, 트러블슈팅 전부 그 문서에 있다. 이 문서는
@@ -80,6 +80,8 @@
   대비 월 약 $1.1 추가).
 
 ## 다음 세션 시작점
+
+> **2026-11-16 화면 리팩토링(PR #2, rebase 병합 `1b0145a`, Vercel 수동 재배포)**: 출처가 각주처럼 이어지는 화면, 홈 2단과 답변 미리보기, 한글 줄바꿈. Lighthouse Accessibility `/login` 96, `/search` 95 → 3개 페이지 모두 100, 첫 화면 전송량 258KB → 208KB(docs/frontend-design.md, docs/frontend-lighthouse.md).
 
 > **2026-10-14 세션 결과**: Hikari `minimum-idle: 10`을 명시했다(`8c06650`) - 비워 두면 풀이 50으로
 > 고정돼 Blue-Green 전환 중 50 + 50 = 100으로 Postgres `max_connections`(100)를 전부 채운다. 로컬
