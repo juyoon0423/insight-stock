@@ -58,9 +58,10 @@ export default function Home() {
               <p className="mt-2 text-pretty text-ink-muted">
                 모든 답변에는 출처가 함께 표시됩니다. 답변 속 번호를 누르면 근거가 된 공시로 이동합니다.
               </p>
+              {/* 목업이 정상 답변하는 질문은 lib/mockAnswers.ts의 7월 공시 질문 2개뿐이다(예시 질문은 모두 "찾지 못함") */}
               {USE_MOCK && (
                 <p className="mt-3 inline-block rounded-sm border border-line-strong px-2 py-0.5 text-xs text-ink-muted">
-                  목업 모드: 예시 질문 3개만 정상 응답합니다
+                  목업 모드: 7월 공시 질문 2개만 정상 응답합니다
                 </p>
               )}
             </header>
