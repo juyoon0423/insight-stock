@@ -26,7 +26,8 @@ export default function SearchResultList({ results }: SearchResultListProps) {
           <button
             type="button"
             onClick={() => setShowMore((v) => !v)}
-            className="w-full rounded-lg border border-dashed border-zinc-300 py-2 text-xs font-medium text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+            aria-expanded={showMore}
+            className="w-full rounded-md border border-dashed border-line-strong py-2.5 text-sm font-semibold text-ink-muted transition-colors hover:border-ink hover:text-ink"
           >
             {showMore
               ? "다음 순위 후보 접기"

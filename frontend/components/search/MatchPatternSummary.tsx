@@ -12,21 +12,21 @@ export default function MatchPatternSummary({ topResults }: MatchPatternSummaryP
   const headline = describeMatchPatternSummary(summary);
 
   return (
-    <div className="mb-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">{headline}</p>
-      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+    <div className="mb-4 rounded-md border border-line bg-surface p-4">
+      <p className="text-sm font-semibold text-pretty text-ink">{headline}</p>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-sm tabular-nums text-ink-muted">
         <span className="flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-blue-500" aria-hidden="true" />
+          <span className="h-2 w-2 rounded-full bg-rank-keyword" aria-hidden="true" />
           키워드 단독 {summary.keywordOnly}건
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-orange-500" aria-hidden="true" />
+          <span className="h-2 w-2 rounded-full bg-rank-vector" aria-hidden="true" />
           의미 단독 {summary.vectorOnly}건
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="flex -space-x-0.5">
-            <span className="h-1.5 w-1.5 rounded-full border border-white bg-blue-500 dark:border-zinc-900" />
-            <span className="h-1.5 w-1.5 rounded-full border border-white bg-orange-500 dark:border-zinc-900" />
+          <span className="flex -space-x-0.5" aria-hidden="true">
+            <span className="h-2 w-2 rounded-full border border-surface bg-rank-keyword" />
+            <span className="h-2 w-2 rounded-full border border-surface bg-rank-vector" />
           </span>
           양쪽 일치 {summary.consensus}건
         </span>
