@@ -54,34 +54,40 @@ export default function CompanyAutocomplete({ excludeCompanyIds, onSelect, disab
 
   return (
     <div className="relative">
+      <label htmlFor="company-search" className="mb-2 block text-sm font-semibold text-ink">
+        회사 추가
+      </label>
       <input
+        id="company-search"
+        name="company-search"
         type="text"
         value={query}
         onChange={(e) => handleQueryChange(e.target.value)}
         disabled={disabled}
-        placeholder="회사명으로 검색 (예: 삼성전자)"
-        className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+        autoComplete="off"
+        placeholder="회사명으로 검색 (예: 삼성전자)…"
+        className="field-input"
       />
       {query.trim() && (
-        <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-md border border-line bg-surface shadow-lg">
           {isSearching ? (
-            <p className="px-4 py-3 text-sm text-zinc-400 dark:text-zinc-500">검색 중...</p>
+            <p role="status" className="px-4 py-3 text-sm text-ink-subtle">검색 중…</p>
           ) : visibleCandidates.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-zinc-400 dark:text-zinc-500">
+            <p className="px-4 py-3 text-sm text-ink-muted">
               일치하는 회사가 없습니다(현재 수집된 회사 범위 내에서만 검색됩니다).
             </p>
           ) : (
-            <ul className="max-h-64 overflow-y-auto">
+            <ul className="max-h-64 overflow-y-auto overscroll-contain">
               {visibleCandidates.map((company) => (
                 <li key={company.id}>
                   <button
                     type="button"
                     onClick={() => handleSelect(company)}
-                    className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-zinc-900 transition-colors hover:bg-zinc-100 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                    className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left text-ink transition-colors hover:bg-paper"
                   >
-                    <span>{company.corpName}</span>
+                    <span className="min-w-0 truncate">{company.corpName}</span>
                     {company.stockCode && (
-                      <span className="text-xs text-zinc-400 dark:text-zinc-500">{company.stockCode}</span>
+                      <span className="shrink-0 text-sm tabular-nums text-ink-subtle">{company.stockCode}</span>
                     )}
                   </button>
                 </li>

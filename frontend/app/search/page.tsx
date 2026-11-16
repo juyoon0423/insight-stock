@@ -45,19 +45,16 @@ export default function SearchPage() {
   }, []);
 
   return (
-    <div className="flex flex-1 justify-center bg-zinc-50 dark:bg-black">
-      <main className="w-full max-w-2xl px-4 py-10 sm:px-6">
+    <div className="flex flex-1 justify-center">
+      <main id="main-content" className="w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
         <header className="mb-8">
-          <Link
-            href="/"
-            className="text-xs text-zinc-400 transition-colors hover:text-zinc-600 dark:hover:text-zinc-300"
-          >
-            ← 질문하기로 돌아가기
-          </Link>
-          <h1 className="mt-2 text-2xl font-bold text-zinc-900 dark:text-zinc-50">
-            하이브리드 검색 원리 보기
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+          <p className="text-sm">
+            <Link href="/" className="link-quiet">
+              ← 질문하기로 돌아가기
+            </Link>
+          </p>
+          <h1 className="mt-3 text-2xl font-semibold text-balance text-ink">하이브리드 검색 원리 보기</h1>
+          <p className="mt-2 text-pretty text-ink-muted">
             키워드(BM25) 검색과 벡터(의미) 검색이 각각 매긴 순위, 그리고 RRF로 합쳐진
             최종 순위를 함께 보여줍니다. LLM을 호출하지 않아 비용이 거의 없습니다.
           </p>
@@ -66,40 +63,38 @@ export default function SearchPage() {
         <SearchQueryForm onSubmit={runSearch} isLoading={status === "loading"} />
 
         {status === "loading" && (
-          <div className="mt-6 animate-pulse space-y-3" aria-busy="true" aria-label="검색 중">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="h-24 rounded-lg bg-zinc-200 dark:bg-zinc-800" />
-            ))}
+          <div role="status" className="mt-8">
+            <span className="sr-only">검색 중입니다…</span>
+            <div className="animate-pulse space-y-3" aria-hidden="true">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-24 rounded-md bg-line" />
+              ))}
+            </div>
           </div>
         )}
 
         {status === "error" && (
-          <div className="mt-6 flex flex-col items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900/50 dark:bg-red-950/30">
-            <p className="text-sm text-red-700 dark:text-red-400">{errorMessage}</p>
-            <button
-              onClick={() => runSearch(lastQuery)}
-              className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
-            >
+          <div role="alert" className="alert-danger mt-8 flex flex-col items-start gap-3">
+            <p>{errorMessage}</p>
+            <button type="button" onClick={() => runSearch(lastQuery)} className="btn-secondary">
               다시 시도
             </button>
           </div>
         )}
 
         {status === "success" && results.length === 0 && (
-          <p className="mt-16 text-center text-sm text-zinc-400 dark:text-zinc-500">
-            검색 결과가 없습니다.
-          </p>
+          <p className="mt-12 text-sm text-ink-muted">검색 결과가 없습니다. 회사명이나 공시 종류를 넣어 다시 검색해 보세요.</p>
         )}
 
         {status === "success" && results.length > 0 && (
-          <div className="mt-6">
+          <div className="mt-8">
             <MatchPatternSummary topResults={results.slice(0, TOP_N)} />
             <SearchResultList results={results} />
           </div>
         )}
 
         {status === "idle" && (
-          <p className="py-16 text-center text-sm text-zinc-400 dark:text-zinc-500">
+          <p className="mt-12 text-sm text-ink-subtle">
             질문을 입력하면 키워드/벡터 검색 순위와 RRF 융합 결과를 비교해서 보여줍니다.
           </p>
         )}

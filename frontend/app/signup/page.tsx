@@ -55,98 +55,110 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="flex flex-1 justify-center bg-zinc-50 dark:bg-black">
-      <main className="w-full max-w-sm px-4 py-10 sm:px-6">
-        <header className="mb-8 text-center">
-          <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">회원가입</h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            WatchList 등 개인화 기능을 쓰려면 계정이 필요합니다.
-          </p>
+    <div className="flex flex-1 justify-center">
+      <main id="main-content" className="w-full max-w-sm px-4 py-12 sm:px-6 sm:py-16">
+        <header className="mb-8">
+          <h1 className="text-2xl font-semibold text-ink">회원가입</h1>
+          <p className="mt-1.5 text-ink-muted">WatchList 등 개인화 기능을 쓰려면 계정이 필요합니다.</p>
         </header>
 
-        <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
+        <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
           <div>
-            <label htmlFor="email" className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            <label htmlFor="email" className="mb-1.5 block text-sm font-semibold text-ink">
               이메일
             </label>
             <input
               id="email"
+              name="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={isSubmitting}
+              autoComplete="email"
+              spellCheck={false}
               placeholder="you@example.com"
-              className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+              aria-invalid={fieldErrors.email ? true : undefined}
+              aria-describedby={fieldErrors.email ? "email-error" : undefined}
+              className="field-input"
             />
             {fieldErrors.email && (
-              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.email}</p>
+              <p id="email-error" className="mt-1.5 text-sm text-danger">
+                {fieldErrors.email}
+              </p>
             )}
           </div>
 
           <div>
-            <label htmlFor="password" className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            <label htmlFor="password" className="mb-1.5 block text-sm font-semibold text-ink">
               비밀번호
             </label>
             <input
               id="password"
+              name="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               disabled={isSubmitting}
+              autoComplete="new-password"
               placeholder="8자 이상"
-              className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+              aria-invalid={fieldErrors.password ? true : undefined}
+              aria-describedby={fieldErrors.password ? "password-error" : undefined}
+              className="field-input"
             />
             {fieldErrors.password && (
-              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.password}</p>
+              <p id="password-error" className="mt-1.5 text-sm text-danger">
+                {fieldErrors.password}
+              </p>
             )}
           </div>
 
           <div>
-            <label htmlFor="nickname" className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            <label htmlFor="nickname" className="mb-1.5 block text-sm font-semibold text-ink">
               닉네임
             </label>
             <input
               id="nickname"
+              name="nickname"
               type="text"
               value={nickname}
               onChange={(e) => setNickname(e.target.value)}
               disabled={isSubmitting}
+              autoComplete="nickname"
               placeholder="2~20자"
-              className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+              aria-invalid={fieldErrors.nickname ? true : undefined}
+              aria-describedby={fieldErrors.nickname ? "nickname-error" : undefined}
+              className="field-input"
             />
             {fieldErrors.nickname && (
-              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.nickname}</p>
+              <p id="nickname-error" className="mt-1.5 text-sm text-danger">
+                {fieldErrors.nickname}
+              </p>
             )}
           </div>
 
           {formError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/30">
-              <p className="text-sm text-red-700 dark:text-red-400">{formError}</p>
+            <div role="alert" className="alert-danger">
+              {formError}
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="rounded-lg bg-zinc-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-          >
-            {isSubmitting ? "가입 중..." : "회원가입"}
+          <button type="submit" disabled={isSubmitting} className="btn-primary w-full">
+            {isSubmitting ? "가입 중…" : "회원가입"}
           </button>
         </form>
 
-        <p className="mt-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="mt-6 text-sm text-ink-muted">
           이미 계정이 있으신가요?{" "}
-          <Link href="/login" className="font-medium text-zinc-900 hover:underline dark:text-zinc-100">
+          <Link href="/login" className="font-semibold text-evidence underline-offset-2 hover:underline">
             로그인
           </Link>
         </p>
 
-        <Link
-          href="/"
-          className="mt-8 block text-center text-xs text-zinc-400 transition-colors hover:text-zinc-600 dark:hover:text-zinc-300"
-        >
-          ← 메인으로 돌아가기
-        </Link>
+        <p className="mt-10 text-sm">
+          <Link href="/" className="link-quiet">
+            ← 메인으로 돌아가기
+          </Link>
+        </p>
       </main>
     </div>
   );

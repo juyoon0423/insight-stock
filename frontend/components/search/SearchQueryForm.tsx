@@ -40,33 +40,38 @@ export default function SearchQueryForm({ onSubmit, isLoading }: SearchQueryForm
 
   return (
     <div>
-      <form onSubmit={handleSubmit} className="flex flex-col gap-2 sm:flex-row">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          // 백엔드 검증(검색어 500자 이하)과 같은 값 - 넘겨서 400을 받기 전에 입력 단계에서 막는다.
-          maxLength={500}
-          placeholder="검색어를 입력해보세요 (예: 신영증권 증권발행실적보고서)"
-          disabled={isLoading}
-          className="w-full flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500"
-        />
-        <button
-          type="submit"
-          disabled={isLoading || !query.trim()}
-          className="shrink-0 rounded-lg bg-zinc-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-        >
-          {isLoading ? "검색 중..." : "검색"}
-        </button>
+      <form onSubmit={handleSubmit}>
+        <label htmlFor="search-query" className="mb-2 block text-sm font-semibold text-ink">
+          검색어
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            id="search-query"
+            name="search-query"
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            // 백엔드 검증(검색어 500자 이하)과 같은 값 - 넘겨서 400을 받기 전에 입력 단계에서 막는다.
+            maxLength={500}
+            autoComplete="off"
+            placeholder="예: 신영증권 증권발행실적보고서"
+            disabled={isLoading}
+            className="field-input min-w-0 flex-1"
+          />
+          <button type="submit" disabled={isLoading || !query.trim()} className="btn-primary">
+            {isLoading ? "검색 중…" : "검색"}
+          </button>
+        </div>
       </form>
-      <div className="mt-3 flex flex-wrap gap-2">
+      <h2 className="mt-6 text-sm font-semibold text-ink">예시 검색어</h2>
+      <div className="mt-2 flex flex-wrap gap-2">
         {EXAMPLE_QUERIES.map((example) => (
           <button
             key={example}
             type="button"
             disabled={isLoading}
             onClick={() => handleExampleClick(example)}
-            className="rounded-full border border-zinc-200 px-3 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-700 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+            className="rounded-md border border-line-strong bg-surface px-3 py-1.5 text-left text-sm text-ink transition-colors hover:border-ink disabled:cursor-not-allowed disabled:text-ink-subtle"
           >
             {example}
           </button>
