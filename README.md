@@ -24,7 +24,41 @@ DART(전자공시시스템) 공시를 **하이브리드 검색(BM25 + 벡터 + R
 
 공시 검색·요약 도구이며 투자 판단에 대한 조언이 아닙니다. 데이터 출처: 금융감독원 전자공시시스템(DART).
 
-<!-- TODO: 스크린샷 (예: docs/images/search.png, docs/images/answer.png) -->
+## 화면
+
+![질문을 입력하면 답변과 근거 공시가 나오고, 답변 속 출처 번호를 누르면 해당 공시가 강조된다](docs/images/frontend/answer-flow.gif)
+
+답변 속 번호를 누르면 근거가 된 공시로 이동하고, 그 공시가 강조된다. 출처 번호는 LLM이 쓴 텍스트가
+아니라 서버가 실제 청크에 매핑한 번호이고, 범위 밖 번호는 배지로 만들지 않는다.
+
+| 첫 화면: 질문과 답변 미리보기 | 첫 화면 (모바일) |
+|---|---|
+| <img src="docs/images/frontend/after/home-desktop.png" alt="왼쪽에 질문 입력과 예시 질문, 오른쪽에 출처 번호가 붙은 답변 미리보기 카드가 있는 첫 화면" width="560"> | <img src="docs/images/frontend/after/home-mobile.png" alt="모바일 첫 화면: 입력창, 예시 질문, 답변 미리보기 순서" width="220"> |
+
+| 답변과 근거 공시 (데스크톱) | 모바일 |
+|---|---|
+| <img src="docs/images/frontend/after/answer-q6-desktop.png" alt="답변 본문 오른쪽에 근거 공시 3건이 각주처럼 나열된 화면" width="560"> | <img src="docs/images/frontend/after/answer-q6-mobile.png" alt="모바일에서 답변 아래에 근거 공시가 이어지는 화면" width="220"> |
+
+| 하이브리드 검색 순위 비교 (`/search`) | 다크 모드 |
+|---|---|
+| <img src="docs/images/frontend/after/search-q5-desktop.png" alt="키워드 순위와 의미 검색 순위, RRF 최종 순위를 함께 보여 주는 검색 화면" width="420"> | <img src="docs/images/frontend/after/answer-q6-dark-desktop.png" alt="다크 모드의 답변 화면" width="420"> |
+
+- 캡처 조건: 로컬 프로덕션 빌드와 로컬 데이터(테스트 계정만 사용). GIF는 실제로 받은 답변 응답을 재생해 만들었다.
+- 화면 리팩토링(디자인 결정, 접근성 점검, 전후 Lighthouse): [docs/frontend-design.md](./docs/frontend-design.md),
+  [docs/frontend-lighthouse.md](./docs/frontend-lighthouse.md). Accessibility 95~96점 → 100점, 첫 화면 전송량
+  258KB → 208KB, Performance 100점과 LCP 유지.
+
+<details>
+<summary>리팩토링 전후 비교</summary>
+
+| 전 | 후 |
+|---|---|
+| <img src="docs/images/frontend/before/answer-q6-desktop.png" alt="리팩토링 전: 가운데 정렬, 출처가 카드 2열" width="400"> | <img src="docs/images/frontend/after/answer-q6-desktop.png" alt="리팩토링 후: 왼쪽 정렬, 본문과 근거 공시 2단" width="400"> |
+| <img src="docs/images/frontend/before/answer-q1-desktop.png" alt="리팩토링 전: 관련 공시를 찾지 못한 화면" width="400"> | <img src="docs/images/frontend/after/answer-q1-desktop.png" alt="리팩토링 후: 찾지 못한 이유와 다음에 할 일을 안내하는 화면" width="400"> |
+
+두 번째 줄은 로컬 데이터에 10월 공시가 색인되지 않아 "찾지 못함"이 나온 질문으로, 빈 상태 화면 비교용이다.
+
+</details>
 
 ## 이렇게 물어보세요
 
@@ -309,4 +343,6 @@ npm run dev                         # http://localhost:3000
 | [docs/loadtest.md](./docs/loadtest.md) | k6 부하테스트 — 스레드풀/커넥션풀 병목 발견과 수정 |
 | [docs/ci.md](./docs/ci.md) | GitHub Actions 테스트 자동화 |
 | [docs/deploy.md](./docs/deploy.md) | AWS EC2 배포, Nginx/TLS, Blue-Green 무중단 배포, 데이터 이전 절차 |
+| [docs/frontend-design.md](./docs/frontend-design.md) | 프론트 화면 디자인 방향(색, 글꼴, 레이아웃)과 근거, 접근성 점검과 대비값 |
+| [docs/frontend-lighthouse.md](./docs/frontend-lighthouse.md) | 프론트 Lighthouse 측정 조건과 전후 결과, 캡처 조건 |
 | [docs/progress.md](./docs/progress.md) | 현재 진행 상황 요약과 다음 할 일 |
