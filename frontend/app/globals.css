@@ -1,26 +1,202 @@
 @import "tailwindcss";
 
+/*
+ * 디자인 토큰 - 근거: docs/frontend-design.md 3-2절.
+ * 색은 여기서만 정의하고, 컴포넌트는 bg-paper / text-ink 같은 토큰 이름만 쓴다.
+ * 다크 모드는 같은 토큰 이름에 값만 바꿔 넣는다(컴포넌트에 dark: 클래스를 따로 달지 않음).
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  color-scheme: light;
+  --paper: #f6f7f9;
+  --surface: #ffffff;
+  --ink: #17202b;
+  --ink-muted: #4b5563;
+  --ink-subtle: #5f6b7a;
+  --line: #d6dbe2;
+  /* 입력창 테두리처럼 "경계가 보여야 하는" UI 선 - 흰 바탕 대비 3:1 이상 */
+  --line-strong: #8a94a3;
+  /* 강조색은 이것 하나 - 출처 번호, 출처 링크, 주 버튼에만 쓴다 */
+  --evidence: #1d3f94;
+  --evidence-strong: #162f70;
+  --evidence-tint: #e7ecf7;
+  --on-evidence: #ffffff;
+  --danger: #b42318;
+  --danger-tint: #fdf1f0;
+  /* 강조색 하나 원칙의 예외: /search 순위 시각화에서 키워드(BM25)와 의미(벡터) 검색을 구분하는 색 */
+  --rank-keyword: #0f766e;
+  --rank-keyword-tint: #e3f3f1;
+  --rank-vector: #b4400c;
+  --rank-vector-tint: #fcece3;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    color-scheme: dark;
+    --paper: #0f141b;
+    --surface: #161d26;
+    --ink: #e6eaf0;
+    --ink-muted: #a9b3c1;
+    --ink-subtle: #8c97a6;
+    --line: #2a3441;
+    --line-strong: #5d6878;
+    --evidence: #9db4f5;
+    --evidence-strong: #c3d1fa;
+    --evidence-tint: #1e2a45;
+    --on-evidence: #0f141b;
+    --danger: #f29b91;
+    --danger-tint: #3a1d1b;
+    --rank-keyword: #5ec4b6;
+    --rank-keyword-tint: #15302d;
+    --rank-vector: #f0a070;
+    --rank-vector-tint: #3a2417;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-subtle: var(--ink-subtle);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-evidence: var(--evidence);
+  --color-evidence-strong: var(--evidence-strong);
+  --color-evidence-tint: var(--evidence-tint);
+  --color-on-evidence: var(--on-evidence);
+  --color-danger: var(--danger);
+  --color-danger-tint: var(--danger-tint);
+  --color-rank-keyword: var(--rank-keyword);
+  --color-rank-keyword-tint: var(--rank-keyword-tint);
+  --color-rank-vector: var(--rank-vector);
+  --color-rank-vector-tint: var(--rank-vector-tint);
+
+  /* OS 한글 글꼴 스택(다운로드 0) - 맥/iOS는 Apple SD Gothic Neo, 윈도는 맑은 고딕, 안드로이드/리눅스는 Noto Sans KR.
+     IBM Plex Sans KR 웹폰트는 LCP 되돌림 기준에 걸려 뺐다(docs/frontend-design.md 3-3절). */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui,
+    sans-serif;
+
+  /* 가장 작은 글자도 13px - 기존 12px(text-xs), 11px 글자를 없앤다(3-3절 크기 단계) */
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.25rem;
+}
+
+@layer base {
+  html {
+    /* 모바일 두 번 탭 확대 지연 제거 */
+    touch-action: manipulation;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+  }
+
+  /* 키보드 포커스는 모든 요소에서 같은 모양으로 또렷하게(마우스 클릭에는 표시 안 함) */
+  :focus-visible {
+    outline: 2px solid var(--evidence);
+    outline-offset: 2px;
+  }
+
+  /* 움직임 줄이기 설정이면 로딩 깜박임과 색 전환을 끈다 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* 여러 화면이 같이 쓰는 모양 - 같은 클래스 묶음을 화면마다 복사하던 것을 한곳으로 모았다 */
+@layer components {
+  .field-input {
+    width: 100%;
+    border-radius: 0.375rem;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    padding: 0.75rem 1rem;
+    /* 16px 미만이면 iOS Safari가 포커스 때 화면을 확대한다 */
+    font-size: 1rem;
+    line-height: 1.5rem;
+    color: var(--ink);
+  }
+  .field-input::placeholder {
+    color: var(--ink-subtle);
+  }
+  .field-input:focus-visible {
+    outline-offset: 0;
+    border-color: var(--evidence);
+  }
+  .field-input:disabled {
+    opacity: 0.6;
+  }
+  .field-input[aria-invalid="true"] {
+    border-color: var(--danger);
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.375rem;
+    border: 1px solid var(--evidence);
+    background: var(--evidence);
+    padding: 0.75rem 1.5rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--on-evidence);
+    transition: background-color 150ms, border-color 150ms, color 150ms;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--evidence-strong);
+    border-color: var(--evidence-strong);
+  }
+  /* 비활성: 흐리게 만드는 대신 테두리만 남겨 "아직 누를 수 없음"을 모양으로 보여 준다 */
+  .btn-primary:disabled {
+    cursor: not-allowed;
+    background: transparent;
+    border-color: var(--line-strong);
+    color: var(--ink-subtle);
+  }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 0.375rem;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    padding: 0.375rem 0.75rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--ink);
+    transition: border-color 150ms;
+  }
+  .btn-secondary:hover {
+    border-color: var(--ink);
+  }
+
+  /* 보조 링크(돌아가기 등) - 옅게 두되 대비 4.5:1 이상 */
+  .link-quiet {
+    color: var(--ink-muted);
+    text-underline-offset: 3px;
+    transition: color 150ms;
+  }
+  .link-quiet:hover {
+    color: var(--ink);
+    text-decoration: underline;
+  }
+
+  .alert-danger {
+    border-radius: 0.375rem;
+    border: 1px solid var(--danger);
+    background: var(--danger-tint);
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    color: var(--danger);
+  }
 }
