@@ -29,3 +29,6 @@ deploy/*.log
 .agents/
 .claude/
 skills-lock.json
+
+# Lighthouse 원본 리포트 (수치는 docs/frontend-lighthouse.md에 기록)
+lighthouse-reports/
